@@ -1,0 +1,123 @@
+cabal-version:      2.4
+name:               sequent
+version:            0.2.0.0
+synopsis:           A declarative process language compiled to Camunda 8 BPMN
+description:
+  sequent is a source language for BPMN processes designed for source control.
+  A .sq file compiles to a valid Camunda 8 .bpmn file, diagram geometry
+  included. The source is the truth; the .bpmn is a build artifact with
+  deterministic ids, deterministic XML and a layout derived from the normative
+  layout specification in SPEC.md.
+
+license:            BSD-3-Clause
+author:             Pedro
+maintainer:         pedro.coding.contact@gmail.com
+category:           Language
+build-type:         Simple
+extra-source-files:
+    README.md
+    SPEC.md
+    docs/language.md
+    docs/compiler.md
+    docs/testing.md
+    docs/architecture.md
+    docs/design.md
+    docs/current-status.md
+    docs/spec-compliance.md
+    docs/migration.md
+
+common lang
+    ghc-options:        -Wall -Wcompat -Wincomplete-record-updates
+    default-language:   GHC2021
+    default-extensions:
+        OverloadedStrings
+        LambdaCase
+
+library
+    import:           lang
+    hs-source-dirs:   src
+    exposed-modules:
+        Sequent.Diagnostic
+        Sequent.Text.Metrics
+        Sequent.Language.Syntax
+        Sequent.Language.Parser
+        Sequent.Language.Pretty
+        Sequent.Language.Resolve
+        Sequent.Bpmn.Id
+        Sequent.Bpmn.Semantic
+        Sequent.Bpmn.Graph
+        Sequent.Bpmn.Validate
+        Sequent.Camunda.Model
+        Sequent.Camunda.Validate
+        Sequent.Camunda.Xml
+        Sequent.Camunda.Serialize
+        Sequent.Layout
+        Sequent.Layout.Constants
+        Sequent.Layout.Types
+        Sequent.Layout.Analysis
+        Sequent.Layout.Regions
+        Sequent.Layout.Layering
+        Sequent.Layout.Branches
+        Sequent.Layout.Bands
+        Sequent.Layout.Geometry
+        Sequent.Layout.Ports
+        Sequent.Layout.Routing
+        Sequent.Layout.Labels
+        Sequent.Layout.Collision
+        Sequent.Layout.Compact
+        Sequent.Layout.Snap
+        Sequent.Layout.Score
+        Sequent.Layout.Improve
+        Sequent.Layout.Validate
+        Sequent.Layout.Rules
+        Sequent.Compiler
+    build-depends:
+        base         >=4.17 && <5,
+        containers   >=0.6  && <0.8,
+        megaparsec   >=9.5  && <10,
+        text         >=2.0  && <2.2,
+        transformers >=0.6  && <0.7
+
+executable sequent
+    import:           lang
+    hs-source-dirs:   app
+    main-is:          Main.hs
+    build-depends:
+        base,
+        filepath >=1.4 && <1.6,
+        text,
+        sequent,
+        optparse-applicative >=0.18 && <0.20
+
+test-suite spec
+    import:           lang
+    -- Tests use head/last on lists they have just constructed; a partial
+    -- pattern failing loudly is the intended behavior there.
+    ghc-options:      -Wno-x-partial
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    main-is:          Spec.hs
+    other-modules:
+        Sequent.Test.Support
+        Sequent.ParserSpec
+        Sequent.ResolveSpec
+        Sequent.PrettySpec
+        Sequent.IdSpec
+        Sequent.MetricsSpec
+        Sequent.XmlSpec
+        Sequent.SerializeSpec
+        Sequent.DeterminismSpec
+        Sequent.LayoutInvariantSpec
+        Sequent.SpecRuleSpec
+        Sequent.GoldenSpec
+        Sequent.PerformanceSpec
+    build-depends:
+        base,
+        containers,
+        deepseq    >=1.4 && <1.6,
+        directory  >=1.3 && <1.4,
+        filepath   >=1.4 && <1.6,
+        text,
+        sequent,
+        hspec      >=2.11 && <2.12,
+        QuickCheck >=2.14 && <2.16
