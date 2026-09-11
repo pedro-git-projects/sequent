@@ -1,0 +1,300 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:modeler="http://camunda.org/schema/modeler/1.0" id="Definitions_1" targetNamespace="http://bpmn.io/schema/bpmn" exporter="sequent" exporterVersion="0.2.0" modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.6.0">
+  <bpmn:message id="Message_contract_signed" name="contract-signed">
+    <bpmn:extensionElements>
+      <zeebe:subscription correlationKey="=candidateId" />
+    </bpmn:extensionElements>
+  </bpmn:message>
+  <bpmn:signal id="Signal_hiring_frozen" name="hiring-frozen" />
+  <bpmn:error id="Error_provision_failed" name="Provisioning failed" errorCode="PROVISION_FAILED" />
+  <bpmn:process id="Process_onboarding" name="Employee onboarding" isExecutable="true">
+    <bpmn:documentation>Runs from an accepted offer to a provisioned employee.</bpmn:documentation>
+    <bpmn:startEvent id="StartEvent_offer_accepted" name="Offer accepted">
+      <bpmn:outgoing>Flow_offer_accepted_create_record</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="Activity_create_record" name="Create HR record">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="hr-create-record" retries="3" />
+        <zeebe:ioMapping>
+          <zeebe:input source="=candidate.id" target="candidateId" />
+          <zeebe:output source="=result.employeeId" target="employeeId" />
+        </zeebe:ioMapping>
+        <zeebe:taskHeaders>
+          <zeebe:header key="system" value="workday" />
+        </zeebe:taskHeaders>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_offer_accepted_create_record</bpmn:incoming>
+      <bpmn:outgoing>Flow_create_record_await_contract</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:receiveTask id="Activity_await_contract" name="Await signed contract" messageRef="Message_contract_signed">
+      <bpmn:incoming>Flow_create_record_await_contract</bpmn:incoming>
+      <bpmn:outgoing>Flow_await_contract_check_clear</bpmn:outgoing>
+    </bpmn:receiveTask>
+    <bpmn:exclusiveGateway id="Gateway_check_clear" name="Background check clear?" default="Flow_check_clear_check_clear_join">
+      <bpmn:incoming>Flow_await_contract_check_clear</bpmn:incoming>
+      <bpmn:outgoing>Flow_check_clear_review_exception</bpmn:outgoing>
+      <bpmn:outgoing>Flow_check_clear_check_clear_join</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:userTask id="Activity_review_exception" name="Review exception">
+      <bpmn:extensionElements>
+        <zeebe:userTask />
+        <zeebe:formDefinition formId="onboarding-exception" />
+        <zeebe:assignmentDefinition candidateGroups="=hr-leads" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_check_clear_review_exception</bpmn:incoming>
+      <bpmn:outgoing>Flow_review_exception_check_clear_join</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:exclusiveGateway id="Gateway_check_clear_join">
+      <bpmn:incoming>Flow_check_clear_check_clear_join</bpmn:incoming>
+      <bpmn:incoming>Flow_review_exception_check_clear_join</bpmn:incoming>
+      <bpmn:outgoing>Flow_check_clear_join_provision</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="Activity_provision" name="Provision accounts">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="it-provision" />
+        <zeebe:ioMapping>
+          <zeebe:input source="=employeeId" target="employee" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_check_clear_join_provision</bpmn:incoming>
+      <bpmn:outgoing>Flow_provision_workspace</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:parallelGateway id="Gateway_workspace" name="Prepare workspace">
+      <bpmn:incoming>Flow_provision_workspace</bpmn:incoming>
+      <bpmn:incoming>Flow_manual_provision_workspace</bpmn:incoming>
+      <bpmn:outgoing>Flow_workspace_order_laptop</bpmn:outgoing>
+      <bpmn:outgoing>Flow_workspace_book_induction</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:serviceTask id="Activity_order_laptop" name="Order laptop">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="it-order-laptop" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_workspace_order_laptop</bpmn:incoming>
+      <bpmn:outgoing>Flow_order_laptop_workspace_join</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="Activity_book_induction" name="Book induction">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="hr-book-induction" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_workspace_book_induction</bpmn:incoming>
+      <bpmn:outgoing>Flow_book_induction_workspace_join</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:parallelGateway id="Gateway_workspace_join">
+      <bpmn:incoming>Flow_order_laptop_workspace_join</bpmn:incoming>
+      <bpmn:incoming>Flow_book_induction_workspace_join</bpmn:incoming>
+      <bpmn:outgoing>Flow_workspace_join_onboarded</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:endEvent id="Event_onboarded" name="Onboarded">
+      <bpmn:incoming>Flow_workspace_join_onboarded</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:boundaryEvent id="Event_contract_timeout" name="No contract in 14 days" attachedToRef="Activity_await_contract">
+      <bpmn:outgoing>Flow_contract_timeout_freeze</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="Event_contract_timeout_def">
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">P14D</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:intermediateThrowEvent id="Event_freeze" name="Freeze the requisition">
+      <bpmn:incoming>Flow_contract_timeout_freeze</bpmn:incoming>
+      <bpmn:outgoing>Flow_freeze_withdrawn</bpmn:outgoing>
+      <bpmn:signalEventDefinition id="Event_freeze_def" signalRef="Signal_hiring_frozen" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:endEvent id="Event_withdrawn" name="Offer withdrawn">
+      <bpmn:incoming>Flow_freeze_withdrawn</bpmn:incoming>
+      <bpmn:terminateEventDefinition id="Event_withdrawn_def" />
+    </bpmn:endEvent>
+    <bpmn:boundaryEvent id="Event_provision_error" name="Provisioning failed" attachedToRef="Activity_provision">
+      <bpmn:outgoing>Flow_provision_error_manual_provision</bpmn:outgoing>
+      <bpmn:errorEventDefinition id="Event_provision_error_def" errorRef="Error_provision_failed" />
+    </bpmn:boundaryEvent>
+    <bpmn:userTask id="Activity_manual_provision" name="Provision by hand">
+      <bpmn:extensionElements>
+        <zeebe:userTask />
+        <zeebe:assignmentDefinition candidateGroups="=it-ops" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_provision_error_manual_provision</bpmn:incoming>
+      <bpmn:outgoing>Flow_manual_provision_workspace</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:sequenceFlow id="Flow_offer_accepted_create_record" sourceRef="StartEvent_offer_accepted" targetRef="Activity_create_record" />
+    <bpmn:sequenceFlow id="Flow_create_record_await_contract" sourceRef="Activity_create_record" targetRef="Activity_await_contract" />
+    <bpmn:sequenceFlow id="Flow_await_contract_check_clear" sourceRef="Activity_await_contract" targetRef="Gateway_check_clear" />
+    <bpmn:sequenceFlow id="Flow_check_clear_review_exception" name="needs review" sourceRef="Gateway_check_clear" targetRef="Activity_review_exception">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=checkResult != "clear"</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_check_clear_check_clear_join" name="clear" sourceRef="Gateway_check_clear" targetRef="Gateway_check_clear_join" />
+    <bpmn:sequenceFlow id="Flow_review_exception_check_clear_join" sourceRef="Activity_review_exception" targetRef="Gateway_check_clear_join" />
+    <bpmn:sequenceFlow id="Flow_check_clear_join_provision" sourceRef="Gateway_check_clear_join" targetRef="Activity_provision" />
+    <bpmn:sequenceFlow id="Flow_provision_workspace" sourceRef="Activity_provision" targetRef="Gateway_workspace" />
+    <bpmn:sequenceFlow id="Flow_workspace_order_laptop" sourceRef="Gateway_workspace" targetRef="Activity_order_laptop" />
+    <bpmn:sequenceFlow id="Flow_workspace_book_induction" sourceRef="Gateway_workspace" targetRef="Activity_book_induction" />
+    <bpmn:sequenceFlow id="Flow_order_laptop_workspace_join" sourceRef="Activity_order_laptop" targetRef="Gateway_workspace_join" />
+    <bpmn:sequenceFlow id="Flow_book_induction_workspace_join" sourceRef="Activity_book_induction" targetRef="Gateway_workspace_join" />
+    <bpmn:sequenceFlow id="Flow_workspace_join_onboarded" sourceRef="Gateway_workspace_join" targetRef="Event_onboarded" />
+    <bpmn:sequenceFlow id="Flow_contract_timeout_freeze" sourceRef="Event_contract_timeout" targetRef="Event_freeze" />
+    <bpmn:sequenceFlow id="Flow_freeze_withdrawn" sourceRef="Event_freeze" targetRef="Event_withdrawn" />
+    <bpmn:sequenceFlow id="Flow_provision_error_manual_provision" sourceRef="Event_provision_error" targetRef="Activity_manual_provision" />
+    <bpmn:sequenceFlow id="Flow_manual_provision_workspace" sourceRef="Activity_manual_provision" targetRef="Gateway_workspace" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Process_onboarding">
+      <bpmndi:BPMNShape id="StartEvent_offer_accepted_di" bpmnElement="StartEvent_offer_accepted">
+        <dc:Bounds x="62" y="162" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="41" y="203" width="79" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_create_record_di" bpmnElement="Activity_create_record">
+        <dc:Bounds x="160" y="140" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_await_contract_di" bpmnElement="Activity_await_contract">
+        <dc:Bounds x="320" y="140" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_check_clear_di" bpmnElement="Gateway_check_clear" isMarkerVisible="true">
+        <dc:Bounds x="485" y="155" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="477" y="210" width="67" height="28" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_review_exception_di" bpmnElement="Activity_review_exception">
+        <dc:Bounds x="630" y="40" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_check_clear_join_di" bpmnElement="Gateway_check_clear_join" isMarkerVisible="true">
+        <dc:Bounds x="795" y="155" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_provision_di" bpmnElement="Activity_provision">
+        <dc:Bounds x="910" y="140" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_workspace_di" bpmnElement="Gateway_workspace">
+        <dc:Bounds x="1235" y="155" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1193" y="122" width="57" height="28" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_order_laptop_di" bpmnElement="Activity_order_laptop">
+        <dc:Bounds x="1370" y="70" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_book_induction_di" bpmnElement="Activity_book_induction">
+        <dc:Bounds x="1370" y="210" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_workspace_join_di" bpmnElement="Gateway_workspace_join">
+        <dc:Bounds x="1535" y="155" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_onboarded_di" bpmnElement="Event_onboarded">
+        <dc:Bounds x="1632" y="162" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1620" y="203" width="60" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_contract_timeout_di" bpmnElement="Event_contract_timeout">
+        <dc:Bounds x="352" y="202" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="286" y="243" width="74" height="28" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_freeze_di" bpmnElement="Event_freeze">
+        <dc:Bounds x="492" y="362" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="482" y="403" width="57" height="28" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_withdrawn_di" bpmnElement="Event_withdrawn">
+        <dc:Bounds x="662" y="362" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="638" y="403" width="84" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_provision_error_di" bpmnElement="Event_provision_error">
+        <dc:Bounds x="942" y="202" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="885" y="243" width="65" height="28" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_manual_provision_di" bpmnElement="Activity_manual_provision">
+        <dc:Bounds x="1070" y="230" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_offer_accepted_create_record_di" bpmnElement="Flow_offer_accepted_create_record">
+        <di:waypoint x="98" y="180" />
+        <di:waypoint x="160" y="180" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_create_record_await_contract_di" bpmnElement="Flow_create_record_await_contract">
+        <di:waypoint x="260" y="180" />
+        <di:waypoint x="320" y="180" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_await_contract_check_clear_di" bpmnElement="Flow_await_contract_check_clear">
+        <di:waypoint x="420" y="180" />
+        <di:waypoint x="485" y="180" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_check_clear_review_exception_di" bpmnElement="Flow_check_clear_review_exception">
+        <di:waypoint x="510" y="155" />
+        <di:waypoint x="510" y="80" />
+        <di:waypoint x="630" y="80" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="540" y="61" width="71" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_check_clear_check_clear_join_di" bpmnElement="Flow_check_clear_check_clear_join">
+        <di:waypoint x="535" y="180" />
+        <di:waypoint x="795" y="180" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="540" y="161" width="26" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_review_exception_check_clear_join_di" bpmnElement="Flow_review_exception_check_clear_join">
+        <di:waypoint x="730" y="80" />
+        <di:waypoint x="820" y="80" />
+        <di:waypoint x="820" y="155" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_check_clear_join_provision_di" bpmnElement="Flow_check_clear_join_provision">
+        <di:waypoint x="845" y="180" />
+        <di:waypoint x="910" y="180" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_provision_workspace_di" bpmnElement="Flow_provision_workspace">
+        <di:waypoint x="1010" y="180" />
+        <di:waypoint x="1235" y="180" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_workspace_order_laptop_di" bpmnElement="Flow_workspace_order_laptop">
+        <di:waypoint x="1260" y="155" />
+        <di:waypoint x="1260" y="110" />
+        <di:waypoint x="1370" y="110" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_workspace_book_induction_di" bpmnElement="Flow_workspace_book_induction">
+        <di:waypoint x="1285" y="180" />
+        <di:waypoint x="1330" y="180" />
+        <di:waypoint x="1330" y="250" />
+        <di:waypoint x="1370" y="250" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_order_laptop_workspace_join_di" bpmnElement="Flow_order_laptop_workspace_join">
+        <di:waypoint x="1470" y="110" />
+        <di:waypoint x="1560" y="110" />
+        <di:waypoint x="1560" y="155" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_book_induction_workspace_join_di" bpmnElement="Flow_book_induction_workspace_join">
+        <di:waypoint x="1470" y="250" />
+        <di:waypoint x="1560" y="250" />
+        <di:waypoint x="1560" y="205" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_workspace_join_onboarded_di" bpmnElement="Flow_workspace_join_onboarded">
+        <di:waypoint x="1585" y="180" />
+        <di:waypoint x="1632" y="180" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_contract_timeout_freeze_di" bpmnElement="Flow_contract_timeout_freeze">
+        <di:waypoint x="370" y="238" />
+        <di:waypoint x="370" y="380" />
+        <di:waypoint x="492" y="380" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_freeze_withdrawn_di" bpmnElement="Flow_freeze_withdrawn">
+        <di:waypoint x="528" y="380" />
+        <di:waypoint x="662" y="380" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_provision_error_manual_provision_di" bpmnElement="Flow_provision_error_manual_provision">
+        <di:waypoint x="960" y="238" />
+        <di:waypoint x="960" y="270" />
+        <di:waypoint x="1070" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_manual_provision_workspace_di" bpmnElement="Flow_manual_provision_workspace">
+        <di:waypoint x="1170" y="270" />
+        <di:waypoint x="1260" y="270" />
+        <di:waypoint x="1260" y="205" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

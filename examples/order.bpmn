@@ -1,0 +1,289 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:modeler="http://camunda.org/schema/modeler/1.0" id="Definitions_1" targetNamespace="http://bpmn.io/schema/bpmn" exporter="sequent" exporterVersion="0.2.0" modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.6.0">
+  <bpmn:message id="Message_payment_confirmed" name="payment-confirmed">
+    <bpmn:extensionElements>
+      <zeebe:subscription correlationKey="=orderId" />
+    </bpmn:extensionElements>
+  </bpmn:message>
+  <bpmn:error id="Error_payment_failed" name="Payment failed" errorCode="PAYMENT_FAILED" />
+  <bpmn:process id="Process_order_fulfilment" name="Order fulfilment" isExecutable="true">
+    <bpmn:documentation>From a placed order to a shipped parcel.</bpmn:documentation>
+    <bpmn:startEvent id="StartEvent_placed" name="Order placed">
+      <bpmn:outgoing>Flow_placed_validate</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="Activity_validate" name="Validate order">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="order-validate" />
+        <zeebe:ioMapping>
+          <zeebe:input source="=order.id" target="orderId" />
+          <zeebe:output source="=result.valid" target="valid" />
+        </zeebe:ioMapping>
+        <zeebe:taskHeaders>
+          <zeebe:header key="schema" value="v3" />
+        </zeebe:taskHeaders>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_placed_validate</bpmn:incoming>
+      <bpmn:incoming>Flow_fix_validate</bpmn:incoming>
+      <bpmn:outgoing>Flow_validate_is_valid</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:exclusiveGateway id="Gateway_is_valid" name="Order valid?" default="Flow_is_valid_charge">
+      <bpmn:incoming>Flow_validate_is_valid</bpmn:incoming>
+      <bpmn:outgoing>Flow_is_valid_fix</bpmn:outgoing>
+      <bpmn:outgoing>Flow_is_valid_charge</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:userTask id="Activity_fix" name="Correct the order">
+      <bpmn:extensionElements>
+        <zeebe:userTask />
+        <zeebe:formDefinition formId="order-correction" />
+        <zeebe:assignmentDefinition candidateGroups="=order-desk" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_is_valid_fix</bpmn:incoming>
+      <bpmn:outgoing>Flow_fix_validate</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:serviceTask id="Activity_charge" name="Charge card">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="payment-charge" retries="3" />
+        <zeebe:ioMapping>
+          <zeebe:input source="=order.total" target="amount" />
+          <zeebe:output source="=result.transactionId" target="transactionId" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_is_valid_charge</bpmn:incoming>
+      <bpmn:outgoing>Flow_charge_await_payment</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:intermediateCatchEvent id="Event_await_payment" name="Await confirmation">
+      <bpmn:incoming>Flow_charge_await_payment</bpmn:incoming>
+      <bpmn:outgoing>Flow_await_payment_prepare</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="Event_await_payment_def" messageRef="Message_payment_confirmed" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:parallelGateway id="Gateway_prepare" name="Prepare shipment">
+      <bpmn:incoming>Flow_await_payment_prepare</bpmn:incoming>
+      <bpmn:outgoing>Flow_prepare_pick</bpmn:outgoing>
+      <bpmn:outgoing>Flow_prepare_print_label</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:serviceTask id="Activity_pick" name="Pick items">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="wms-pick" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_prepare_pick</bpmn:incoming>
+      <bpmn:outgoing>Flow_pick_prepare_join</bpmn:outgoing>
+      <bpmn:multiInstanceLoopCharacteristics isSequential="false">
+        <bpmn:extensionElements>
+          <zeebe:loopCharacteristics inputCollection="=order.lines" inputElement="item" />
+        </bpmn:extensionElements>
+      </bpmn:multiInstanceLoopCharacteristics>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="Activity_print_label" name="Print label">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="shipping-label" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_prepare_print_label</bpmn:incoming>
+      <bpmn:outgoing>Flow_print_label_prepare_join</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:parallelGateway id="Gateway_prepare_join">
+      <bpmn:incoming>Flow_pick_prepare_join</bpmn:incoming>
+      <bpmn:incoming>Flow_print_label_prepare_join</bpmn:incoming>
+      <bpmn:outgoing>Flow_prepare_join_dispatch</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:serviceTask id="Activity_dispatch" name="Dispatch parcel">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="carrier-dispatch" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_prepare_join_dispatch</bpmn:incoming>
+      <bpmn:outgoing>Flow_dispatch_shipped</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="Event_shipped" name="Shipped">
+      <bpmn:incoming>Flow_dispatch_shipped</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:boundaryEvent id="Event_charge_failed" name="Payment failed" attachedToRef="Activity_charge">
+      <bpmn:outgoing>Flow_charge_failed_notify_failure</bpmn:outgoing>
+      <bpmn:errorEventDefinition id="Event_charge_failed_def" errorRef="Error_payment_failed" />
+    </bpmn:boundaryEvent>
+    <bpmn:serviceTask id="Activity_notify_failure" name="Tell the customer">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="notify" />
+        <zeebe:ioMapping>
+          <zeebe:input source="=&quot;payment&quot;" target="reason" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_charge_failed_notify_failure</bpmn:incoming>
+      <bpmn:outgoing>Flow_notify_failure_payment_aborted</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="Event_payment_aborted" name="Order abandoned">
+      <bpmn:incoming>Flow_notify_failure_payment_aborted</bpmn:incoming>
+      <bpmn:terminateEventDefinition id="Event_payment_aborted_def" />
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_placed_validate" sourceRef="StartEvent_placed" targetRef="Activity_validate" />
+    <bpmn:sequenceFlow id="Flow_validate_is_valid" sourceRef="Activity_validate" targetRef="Gateway_is_valid" />
+    <bpmn:sequenceFlow id="Flow_is_valid_fix" name="invalid" sourceRef="Gateway_is_valid" targetRef="Activity_fix">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=not(valid)</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_fix_validate" sourceRef="Activity_fix" targetRef="Activity_validate" />
+    <bpmn:sequenceFlow id="Flow_is_valid_charge" name="valid" sourceRef="Gateway_is_valid" targetRef="Activity_charge" />
+    <bpmn:sequenceFlow id="Flow_charge_await_payment" sourceRef="Activity_charge" targetRef="Event_await_payment" />
+    <bpmn:sequenceFlow id="Flow_await_payment_prepare" sourceRef="Event_await_payment" targetRef="Gateway_prepare" />
+    <bpmn:sequenceFlow id="Flow_prepare_pick" sourceRef="Gateway_prepare" targetRef="Activity_pick" />
+    <bpmn:sequenceFlow id="Flow_prepare_print_label" sourceRef="Gateway_prepare" targetRef="Activity_print_label" />
+    <bpmn:sequenceFlow id="Flow_pick_prepare_join" sourceRef="Activity_pick" targetRef="Gateway_prepare_join" />
+    <bpmn:sequenceFlow id="Flow_print_label_prepare_join" sourceRef="Activity_print_label" targetRef="Gateway_prepare_join" />
+    <bpmn:sequenceFlow id="Flow_prepare_join_dispatch" sourceRef="Gateway_prepare_join" targetRef="Activity_dispatch" />
+    <bpmn:sequenceFlow id="Flow_dispatch_shipped" sourceRef="Activity_dispatch" targetRef="Event_shipped" />
+    <bpmn:sequenceFlow id="Flow_charge_failed_notify_failure" sourceRef="Event_charge_failed" targetRef="Activity_notify_failure" />
+    <bpmn:sequenceFlow id="Flow_notify_failure_payment_aborted" sourceRef="Activity_notify_failure" targetRef="Event_payment_aborted" />
+    <bpmn:textAnnotation id="TextAnnotation_retry_note">
+      <bpmn:text>Three attempts, then an incident</bpmn:text>
+    </bpmn:textAnnotation>
+    <bpmn:association id="Association_retry_note_charge" sourceRef="TextAnnotation_retry_note" targetRef="Activity_charge" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Process_order_fulfilment">
+      <bpmndi:BPMNShape id="StartEvent_placed_di" bpmnElement="StartEvent_placed">
+        <dc:Bounds x="62" y="132" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="46" y="173" width="69" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_validate_di" bpmnElement="Activity_validate">
+        <dc:Bounds x="160" y="110" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_is_valid_di" bpmnElement="Gateway_is_valid" isMarkerVisible="true">
+        <dc:Bounds x="325" y="125" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="318" y="106" width="65" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_fix_di" bpmnElement="Activity_fix">
+        <dc:Bounds x="460" y="450" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_charge_di" bpmnElement="Activity_charge">
+        <dc:Bounds x="460" y="110" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_await_payment_di" bpmnElement="Event_await_payment">
+        <dc:Bounds x="652" y="132" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="638" y="173" width="65" height="28" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_prepare_di" bpmnElement="Gateway_prepare">
+        <dc:Bounds x="785" y="125" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="751" y="92" width="49" height="28" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_pick_di" bpmnElement="Activity_pick">
+        <dc:Bounds x="920" y="40" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_print_label_di" bpmnElement="Activity_print_label">
+        <dc:Bounds x="920" y="180" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_prepare_join_di" bpmnElement="Gateway_prepare_join">
+        <dc:Bounds x="1085" y="125" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_dispatch_di" bpmnElement="Activity_dispatch">
+        <dc:Bounds x="1200" y="110" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_shipped_di" bpmnElement="Event_shipped">
+        <dc:Bounds x="1362" y="132" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1358" y="173" width="44" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_charge_failed_di" bpmnElement="Event_charge_failed">
+        <dc:Bounds x="492" y="172" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="421" y="213" width="79" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_notify_failure_di" bpmnElement="Activity_notify_failure">
+        <dc:Bounds x="620" y="310" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_payment_aborted_di" bpmnElement="Event_payment_aborted">
+        <dc:Bounds x="792" y="332" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="780" y="373" width="60" height="28" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="TextAnnotation_retry_note_di" bpmnElement="TextAnnotation_retry_note">
+        <dc:Bounds x="419" y="56" width="182" height="24" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_placed_validate_di" bpmnElement="Flow_placed_validate">
+        <di:waypoint x="98" y="150" />
+        <di:waypoint x="160" y="150" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_validate_is_valid_di" bpmnElement="Flow_validate_is_valid">
+        <di:waypoint x="260" y="150" />
+        <di:waypoint x="325" y="150" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_is_valid_fix_di" bpmnElement="Flow_is_valid_fix">
+        <di:waypoint x="350" y="175" />
+        <di:waypoint x="350" y="490" />
+        <di:waypoint x="460" y="490" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="380" y="471" width="34" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_fix_validate_di" bpmnElement="Flow_fix_validate">
+        <di:waypoint x="510" y="530" />
+        <di:waypoint x="510" y="560" />
+        <di:waypoint x="210" y="560" />
+        <di:waypoint x="210" y="190" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_is_valid_charge_di" bpmnElement="Flow_is_valid_charge">
+        <di:waypoint x="375" y="150" />
+        <di:waypoint x="460" y="150" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="380" y="131" width="25" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_charge_await_payment_di" bpmnElement="Flow_charge_await_payment">
+        <di:waypoint x="560" y="150" />
+        <di:waypoint x="652" y="150" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_await_payment_prepare_di" bpmnElement="Flow_await_payment_prepare">
+        <di:waypoint x="688" y="150" />
+        <di:waypoint x="785" y="150" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_prepare_pick_di" bpmnElement="Flow_prepare_pick">
+        <di:waypoint x="810" y="125" />
+        <di:waypoint x="810" y="80" />
+        <di:waypoint x="920" y="80" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_prepare_print_label_di" bpmnElement="Flow_prepare_print_label">
+        <di:waypoint x="810" y="175" />
+        <di:waypoint x="810" y="220" />
+        <di:waypoint x="920" y="220" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_pick_prepare_join_di" bpmnElement="Flow_pick_prepare_join">
+        <di:waypoint x="1020" y="80" />
+        <di:waypoint x="1110" y="80" />
+        <di:waypoint x="1110" y="125" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_print_label_prepare_join_di" bpmnElement="Flow_print_label_prepare_join">
+        <di:waypoint x="1020" y="220" />
+        <di:waypoint x="1110" y="220" />
+        <di:waypoint x="1110" y="175" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_prepare_join_dispatch_di" bpmnElement="Flow_prepare_join_dispatch">
+        <di:waypoint x="1135" y="150" />
+        <di:waypoint x="1200" y="150" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_dispatch_shipped_di" bpmnElement="Flow_dispatch_shipped">
+        <di:waypoint x="1300" y="150" />
+        <di:waypoint x="1362" y="150" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_charge_failed_notify_failure_di" bpmnElement="Flow_charge_failed_notify_failure">
+        <di:waypoint x="510" y="208" />
+        <di:waypoint x="510" y="350" />
+        <di:waypoint x="620" y="350" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_notify_failure_payment_aborted_di" bpmnElement="Flow_notify_failure_payment_aborted">
+        <di:waypoint x="720" y="350" />
+        <di:waypoint x="792" y="350" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Association_retry_note_charge_di" bpmnElement="Association_retry_note_charge">
+        <di:waypoint x="510" y="80" />
+        <di:waypoint x="510" y="110" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

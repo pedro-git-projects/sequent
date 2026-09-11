@@ -1,0 +1,22 @@
+# A parallel split and its derived join.
+#
+# The `and` block forks; both branches run. The merge gateway is not written --
+# it is derived because two branches reach the end of the block, and it is
+# named `prepare_join`.
+
+process parallel_prep "Parallel preparation" {
+  start requested "Request received"
+
+  and prepare "Prepare in parallel" {
+    branch {
+      service pick "Pick items" { type "wms-pick" }
+    }
+    branch {
+      service print_label "Print label" { type "shipping-label" }
+    }
+  }
+
+  service dispatch "Dispatch" { type "carrier-dispatch" }
+
+  end sent "Sent"
+}

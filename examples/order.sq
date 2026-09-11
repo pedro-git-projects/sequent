@@ -1,0 +1,72 @@
+# Order fulfilment: a decision, a parallel split, a boundary error and a
+# rework loop. The shape of the process is the shape of the file.
+
+message payment_confirmed "payment-confirmed" correlation "=orderId"
+
+error payment_failed "PAYMENT_FAILED" "Payment failed"
+
+process order_fulfilment "Order fulfilment" {
+  doc "From a placed order to a shipped parcel."
+
+  start placed "Order placed"
+
+  service validate "Validate order" {
+    type "order-validate"
+    input orderId = "=order.id"
+    output valid = "=result.valid"
+    header schema = "v3"
+  }
+
+  xor is_valid "Order valid?" {
+    branch "valid" otherwise
+
+    branch "invalid" when "=not(valid)" {
+      user fix "Correct the order" {
+        groups "order-desk"
+        form "order-correction"
+      }
+      goto validate
+    }
+  }
+
+  service charge "Charge card" {
+    type "payment-charge"
+    retries 3
+    input amount = "=order.total"
+    output transactionId = "=result.transactionId"
+  }
+
+  wait await_payment "Await confirmation" {
+    message payment_confirmed
+  }
+
+  and prepare "Prepare shipment" {
+    branch {
+      service pick "Pick items" {
+        type "wms-pick"
+        each item in "=order.lines"
+      }
+    }
+    branch {
+      service print_label "Print label" {
+        type "shipping-label"
+      }
+    }
+  }
+
+  service dispatch "Dispatch parcel" {
+    type "carrier-dispatch"
+  }
+
+  end shipped "Shipped"
+
+  on charge catch error payment_failed as charge_failed "Payment failed" {
+    service notify_failure "Tell the customer" {
+      type "notify"
+      input reason = "=\"payment\""
+    }
+    end payment_aborted "Order abandoned" { terminate }
+  }
+
+  note retry_note "Three attempts, then an incident" on charge
+}

@@ -1,0 +1,12 @@
+# The smallest useful process: a start event, one task, an end event.
+#
+# Nothing here mentions a coordinate or an element id. Both are derived, which
+# is why recompiling this file always produces the same bytes.
+
+process hello "Hello" {
+  start begin "Started"
+
+  task greet "Say hello"
+
+  end done "Finished"
+}

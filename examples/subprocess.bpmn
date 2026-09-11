@@ -1,0 +1,200 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:modeler="http://camunda.org/schema/modeler/1.0" id="Definitions_1" targetNamespace="http://bpmn.io/schema/bpmn" exporter="sequent" exporterVersion="0.2.0" modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.6.0">
+  <bpmn:error id="Error_out_of_stock" name="Out of stock" errorCode="OUT_OF_STOCK" />
+  <bpmn:process id="Process_fulfilment" name="Warehouse fulfilment" isExecutable="true">
+    <bpmn:startEvent id="StartEvent_ordered" name="Order confirmed">
+      <bpmn:outgoing>Flow_ordered_pick_pack</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:subProcess id="Activity_pick_pack" name="Pick and pack">
+      <bpmn:incoming>Flow_ordered_pick_pack</bpmn:incoming>
+      <bpmn:outgoing>Flow_pick_pack_book_carrier</bpmn:outgoing>
+      <bpmn:startEvent id="StartEvent_begin_pick">
+        <bpmn:outgoing>Flow_begin_pick_reserve</bpmn:outgoing>
+      </bpmn:startEvent>
+      <bpmn:serviceTask id="Activity_reserve" name="Reserve stock">
+        <bpmn:extensionElements>
+          <zeebe:taskDefinition type="wms-reserve" />
+        </bpmn:extensionElements>
+        <bpmn:incoming>Flow_begin_pick_reserve</bpmn:incoming>
+        <bpmn:outgoing>Flow_reserve_pick_lines</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:serviceTask id="Activity_pick_lines" name="Pick a line">
+        <bpmn:extensionElements>
+          <zeebe:taskDefinition type="wms-pick" />
+        </bpmn:extensionElements>
+        <bpmn:incoming>Flow_reserve_pick_lines</bpmn:incoming>
+        <bpmn:outgoing>Flow_pick_lines_pack</bpmn:outgoing>
+        <bpmn:multiInstanceLoopCharacteristics isSequential="false">
+          <bpmn:extensionElements>
+            <zeebe:loopCharacteristics inputCollection="=order.lines" inputElement="line" outputCollection="picked" outputElement="=pickResult" />
+          </bpmn:extensionElements>
+        </bpmn:multiInstanceLoopCharacteristics>
+      </bpmn:serviceTask>
+      <bpmn:serviceTask id="Activity_pack" name="Pack the parcel">
+        <bpmn:extensionElements>
+          <zeebe:taskDefinition type="wms-pack" />
+        </bpmn:extensionElements>
+        <bpmn:incoming>Flow_pick_lines_pack</bpmn:incoming>
+        <bpmn:outgoing>Flow_pack_packed</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:endEvent id="Event_packed">
+        <bpmn:incoming>Flow_pack_packed</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_begin_pick_reserve" sourceRef="StartEvent_begin_pick" targetRef="Activity_reserve" />
+      <bpmn:sequenceFlow id="Flow_reserve_pick_lines" sourceRef="Activity_reserve" targetRef="Activity_pick_lines" />
+      <bpmn:sequenceFlow id="Flow_pick_lines_pack" sourceRef="Activity_pick_lines" targetRef="Activity_pack" />
+      <bpmn:sequenceFlow id="Flow_pack_packed" sourceRef="Activity_pack" targetRef="Event_packed" />
+    </bpmn:subProcess>
+    <bpmn:callActivity id="Activity_book_carrier" name="Book a carrier">
+      <bpmn:extensionElements>
+        <zeebe:calledElement processId="carrier-booking" propagateAllChildVariables="true" />
+        <zeebe:ioMapping>
+          <zeebe:input source="=parcel.weightKg" target="weight" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_pick_pack_book_carrier</bpmn:incoming>
+      <bpmn:outgoing>Flow_book_carrier_classify</bpmn:outgoing>
+    </bpmn:callActivity>
+    <bpmn:businessRuleTask id="Activity_classify" name="Classify for customs">
+      <bpmn:extensionElements>
+        <zeebe:calledDecision decisionId="customs-classification" resultVariable="tariff" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_book_carrier_classify</bpmn:incoming>
+      <bpmn:outgoing>Flow_classify_price_shipping</bpmn:outgoing>
+    </bpmn:businessRuleTask>
+    <bpmn:scriptTask id="Activity_price_shipping" name="Price the shipping">
+      <bpmn:extensionElements>
+        <zeebe:script expression="=parcel.weightKg * rate" resultVariable="shippingCost" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_classify_price_shipping</bpmn:incoming>
+      <bpmn:outgoing>Flow_price_shipping_dispatched</bpmn:outgoing>
+    </bpmn:scriptTask>
+    <bpmn:endEvent id="Event_dispatched" name="Dispatched">
+      <bpmn:incoming>Flow_price_shipping_dispatched</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:boundaryEvent id="Event_stock_out" name="Out of stock" attachedToRef="Activity_pick_pack">
+      <bpmn:outgoing>Flow_stock_out_backorder</bpmn:outgoing>
+      <bpmn:errorEventDefinition id="Event_stock_out_def" errorRef="Error_out_of_stock" />
+    </bpmn:boundaryEvent>
+    <bpmn:serviceTask id="Activity_backorder" name="Raise a backorder">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="wms-backorder" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_stock_out_backorder</bpmn:incoming>
+      <bpmn:outgoing>Flow_backorder_backordered</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="Event_backordered" name="Backordered">
+      <bpmn:incoming>Flow_backorder_backordered</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_ordered_pick_pack" sourceRef="StartEvent_ordered" targetRef="Activity_pick_pack" />
+    <bpmn:sequenceFlow id="Flow_pick_pack_book_carrier" sourceRef="Activity_pick_pack" targetRef="Activity_book_carrier" />
+    <bpmn:sequenceFlow id="Flow_book_carrier_classify" sourceRef="Activity_book_carrier" targetRef="Activity_classify" />
+    <bpmn:sequenceFlow id="Flow_classify_price_shipping" sourceRef="Activity_classify" targetRef="Activity_price_shipping" />
+    <bpmn:sequenceFlow id="Flow_price_shipping_dispatched" sourceRef="Activity_price_shipping" targetRef="Event_dispatched" />
+    <bpmn:sequenceFlow id="Flow_stock_out_backorder" sourceRef="Event_stock_out" targetRef="Activity_backorder" />
+    <bpmn:sequenceFlow id="Flow_backorder_backordered" sourceRef="Activity_backorder" targetRef="Event_backordered" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Process_fulfilment">
+      <bpmndi:BPMNShape id="StartEvent_ordered_di" bpmnElement="StartEvent_ordered">
+        <dc:Bounds x="72" y="112" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="47" y="153" width="87" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_pick_pack_di" bpmnElement="Activity_pick_pack" isExpanded="true">
+        <dc:Bounds x="170" y="40" width="700" height="180" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_book_carrier_di" bpmnElement="Activity_book_carrier">
+        <dc:Bounds x="930" y="90" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_classify_di" bpmnElement="Activity_classify">
+        <dc:Bounds x="1090" y="90" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_price_shipping_di" bpmnElement="Activity_price_shipping">
+        <dc:Bounds x="1250" y="90" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_dispatched_di" bpmnElement="Event_dispatched">
+        <dc:Bounds x="1412" y="112" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1400" y="153" width="60" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_stock_out_di" bpmnElement="Event_stock_out">
+        <dc:Bounds x="502" y="202" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="446" y="243" width="64" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_backorder_di" bpmnElement="Activity_backorder">
+        <dc:Bounds x="930" y="220" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_backordered_di" bpmnElement="Event_backordered">
+        <dc:Bounds x="1122" y="242" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1106" y="283" width="68" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="StartEvent_begin_pick_di" bpmnElement="StartEvent_begin_pick">
+        <dc:Bounds x="212" y="112" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_reserve_di" bpmnElement="Activity_reserve">
+        <dc:Bounds x="310" y="90" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_pick_lines_di" bpmnElement="Activity_pick_lines">
+        <dc:Bounds x="470" y="90" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_pack_di" bpmnElement="Activity_pack">
+        <dc:Bounds x="630" y="90" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_packed_di" bpmnElement="Event_packed">
+        <dc:Bounds x="792" y="112" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_ordered_pick_pack_di" bpmnElement="Flow_ordered_pick_pack">
+        <di:waypoint x="108" y="130" />
+        <di:waypoint x="170" y="130" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_pick_pack_book_carrier_di" bpmnElement="Flow_pick_pack_book_carrier">
+        <di:waypoint x="870" y="130" />
+        <di:waypoint x="930" y="130" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_book_carrier_classify_di" bpmnElement="Flow_book_carrier_classify">
+        <di:waypoint x="1030" y="130" />
+        <di:waypoint x="1090" y="130" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_classify_price_shipping_di" bpmnElement="Flow_classify_price_shipping">
+        <di:waypoint x="1190" y="130" />
+        <di:waypoint x="1250" y="130" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_price_shipping_dispatched_di" bpmnElement="Flow_price_shipping_dispatched">
+        <di:waypoint x="1350" y="130" />
+        <di:waypoint x="1412" y="130" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_stock_out_backorder_di" bpmnElement="Flow_stock_out_backorder">
+        <di:waypoint x="520" y="238" />
+        <di:waypoint x="520" y="260" />
+        <di:waypoint x="930" y="260" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_backorder_backordered_di" bpmnElement="Flow_backorder_backordered">
+        <di:waypoint x="1030" y="260" />
+        <di:waypoint x="1122" y="260" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_begin_pick_reserve_di" bpmnElement="Flow_begin_pick_reserve">
+        <di:waypoint x="248" y="130" />
+        <di:waypoint x="310" y="130" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_reserve_pick_lines_di" bpmnElement="Flow_reserve_pick_lines">
+        <di:waypoint x="410" y="130" />
+        <di:waypoint x="470" y="130" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_pick_lines_pack_di" bpmnElement="Flow_pick_lines_pack">
+        <di:waypoint x="570" y="130" />
+        <di:waypoint x="630" y="130" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_pack_packed_di" bpmnElement="Flow_pack_packed">
+        <di:waypoint x="730" y="130" />
+        <di:waypoint x="792" y="130" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

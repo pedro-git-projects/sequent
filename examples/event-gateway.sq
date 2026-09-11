@@ -1,0 +1,24 @@
+# An event-based gateway: the first event to arrive decides the path.
+#
+# Every branch of an `event` gateway must begin with a catching event or a
+# receive task; anything else is a semantic error.
+
+message shipped "shipment-dispatched" correlation "=orderId"
+message cancelled "order-cancelled" correlation "=orderId"
+
+process await_outcome "Await the outcome" {
+  start placed "Order placed"
+
+  event outcome "First to arrive" {
+    branch {
+      receive got_shipment "Shipment notice" { message shipped }
+      service confirm "Confirm to the customer" { type "notify" }
+    }
+    branch {
+      receive got_cancel "Cancellation" { message cancelled }
+      service refund "Refund" { type "payment-refund" }
+    }
+  }
+
+  end closed "Closed"
+}

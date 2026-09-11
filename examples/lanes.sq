@@ -1,0 +1,34 @@
+# A cross-lane handoff. Lane membership comes from nesting, so moving a step
+# between roles is one block move, not an attribute edit on every line.
+
+process claim "Insurance claim" {
+  lane intake "Intake" {
+    start filed "Claim filed"
+    service register "Register claim" { type "claim-register" }
+  }
+
+  lane assessment "Assessment" {
+    user assess "Assess damage" {
+      groups "assessors"
+      form "damage-assessment"
+    }
+
+    xor payout "Payout approved?" {
+      branch "approved" otherwise
+      branch "rejected" when "=not(approved)" {
+        lane intake {
+          user explain "Explain the decision" { groups "intake" }
+          end rejected "Claim rejected"
+        }
+      }
+    }
+  }
+
+  lane finance "Finance" {
+    service pay_out "Pay the claim" {
+      type "payment-transfer"
+      input amount = "=assessment.amount"
+    }
+    end settled "Claim settled"
+  }
+}

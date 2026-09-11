@@ -1,0 +1,22 @@
+# A rework loop.
+#
+# `goto` connects the current path to an existing step and ends the path. It is
+# the only way to write a loop, and the layout engine routes it through a
+# corridor outside the main flow rather than back through it.
+
+process rework "Rework loop" {
+  start received "Draft received"
+
+  user revise "Revise the draft" { groups "editors" }
+
+  service check "Run the checks" { type "doc-check" }
+
+  xor accepted "Accepted?" {
+    branch "accepted" otherwise
+    branch "needs work" when "=not(ok)" {
+      goto revise
+    }
+  }
+
+  end published "Published"
+}

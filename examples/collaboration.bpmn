@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:modeler="http://camunda.org/schema/modeler/1.0" id="Definitions_1" targetNamespace="http://bpmn.io/schema/bpmn" exporter="sequent" exporterVersion="0.2.0" modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.6.0">
+  <bpmn:message id="Message_purchase_order" name="purchase-order">
+    <bpmn:extensionElements>
+      <zeebe:subscription correlationKey="=orderId" />
+    </bpmn:extensionElements>
+  </bpmn:message>
+  <bpmn:message id="Message_shipment_notice" name="shipment-notice">
+    <bpmn:extensionElements>
+      <zeebe:subscription correlationKey="=orderId" />
+    </bpmn:extensionElements>
+  </bpmn:message>
+  <bpmn:collaboration id="Collaboration_trade">
+    <bpmn:participant id="Participant_buyer" name="Buyer" processRef="Process_buyer" />
+    <bpmn:participant id="Participant_seller" name="Seller" processRef="Process_seller" />
+    <bpmn:messageFlow id="MessageFlow_raise_po_order_arrived" name="purchase order" sourceRef="Activity_raise_po" targetRef="StartEvent_order_arrived" />
+    <bpmn:messageFlow id="MessageFlow_ship_await_shipment" name="shipment notice" sourceRef="Activity_ship" targetRef="Event_await_shipment" />
+  </bpmn:collaboration>
+  <bpmn:process id="Process_buyer" name="Buyer" isExecutable="true">
+    <bpmn:startEvent id="StartEvent_need" name="Need identified">
+      <bpmn:outgoing>Flow_need_raise_po</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="Activity_raise_po" name="Raise purchase order">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="po-create" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_need_raise_po</bpmn:incoming>
+      <bpmn:outgoing>Flow_raise_po_await_shipment</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:intermediateCatchEvent id="Event_await_shipment" name="Await shipment notice">
+      <bpmn:incoming>Flow_raise_po_await_shipment</bpmn:incoming>
+      <bpmn:outgoing>Flow_await_shipment_receive_goods</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="Event_await_shipment_def" messageRef="Message_shipment_notice" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:serviceTask id="Activity_receive_goods" name="Receive goods">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="wms-receive" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_await_shipment_receive_goods</bpmn:incoming>
+      <bpmn:outgoing>Flow_receive_goods_received</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="Event_received" name="Goods received">
+      <bpmn:incoming>Flow_receive_goods_received</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_need_raise_po" sourceRef="StartEvent_need" targetRef="Activity_raise_po" />
+    <bpmn:sequenceFlow id="Flow_raise_po_await_shipment" sourceRef="Activity_raise_po" targetRef="Event_await_shipment" />
+    <bpmn:sequenceFlow id="Flow_await_shipment_receive_goods" sourceRef="Event_await_shipment" targetRef="Activity_receive_goods" />
+    <bpmn:sequenceFlow id="Flow_receive_goods_received" sourceRef="Activity_receive_goods" targetRef="Event_received" />
+  </bpmn:process>
+  <bpmn:process id="Process_seller" name="Seller" isExecutable="true">
+    <bpmn:startEvent id="StartEvent_order_arrived" name="Order received">
+      <bpmn:outgoing>Flow_order_arrived_confirm</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="StartEvent_order_arrived_def" messageRef="Message_purchase_order" />
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="Activity_confirm" name="Confirm order">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="order-confirm" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_order_arrived_confirm</bpmn:incoming>
+      <bpmn:outgoing>Flow_confirm_ship</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="Activity_ship" name="Ship goods">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="carrier-book" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_confirm_ship</bpmn:incoming>
+      <bpmn:outgoing>Flow_ship_shipped</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="Event_shipped" name="Goods shipped">
+      <bpmn:incoming>Flow_ship_shipped</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_order_arrived_confirm" sourceRef="StartEvent_order_arrived" targetRef="Activity_confirm" />
+    <bpmn:sequenceFlow id="Flow_confirm_ship" sourceRef="Activity_confirm" targetRef="Activity_ship" />
+    <bpmn:sequenceFlow id="Flow_ship_shipped" sourceRef="Activity_ship" targetRef="Event_shipped" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Collaboration_trade">
+      <bpmndi:BPMNShape id="Participant_buyer_di" bpmnElement="Participant_buyer" isHorizontal="true">
+        <dc:Bounds x="40" y="40" width="712" height="151" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Participant_seller_di" bpmnElement="Participant_seller" isHorizontal="true">
+        <dc:Bounds x="40" y="251" width="712" height="140" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="StartEvent_need_di" bpmnElement="StartEvent_need">
+        <dc:Bounds x="132" y="92" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="110" y="133" width="80" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_raise_po_di" bpmnElement="Activity_raise_po">
+        <dc:Bounds x="230" y="70" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_await_shipment_di" bpmnElement="Event_await_shipment">
+        <dc:Bounds x="392" y="92" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="370" y="59" width="81" height="28" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_receive_goods_di" bpmnElement="Activity_receive_goods">
+        <dc:Bounds x="490" y="70" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_received_di" bpmnElement="Event_received">
+        <dc:Bounds x="652" y="92" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="628" y="133" width="84" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="StartEvent_order_arrived_di" bpmnElement="StartEvent_order_arrived">
+        <dc:Bounds x="132" y="312" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="111" y="353" width="79" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_confirm_di" bpmnElement="Activity_confirm">
+        <dc:Bounds x="230" y="290" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_ship_di" bpmnElement="Activity_ship">
+        <dc:Bounds x="390" y="290" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_shipped_di" bpmnElement="Event_shipped">
+        <dc:Bounds x="552" y="312" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="530" y="353" width="81" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_need_raise_po_di" bpmnElement="Flow_need_raise_po">
+        <di:waypoint x="168" y="110" />
+        <di:waypoint x="230" y="110" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_raise_po_await_shipment_di" bpmnElement="Flow_raise_po_await_shipment">
+        <di:waypoint x="330" y="110" />
+        <di:waypoint x="392" y="110" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_await_shipment_receive_goods_di" bpmnElement="Flow_await_shipment_receive_goods">
+        <di:waypoint x="428" y="110" />
+        <di:waypoint x="490" y="110" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_receive_goods_received_di" bpmnElement="Flow_receive_goods_received">
+        <di:waypoint x="590" y="110" />
+        <di:waypoint x="652" y="110" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_order_arrived_confirm_di" bpmnElement="Flow_order_arrived_confirm">
+        <di:waypoint x="168" y="330" />
+        <di:waypoint x="230" y="330" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_confirm_ship_di" bpmnElement="Flow_confirm_ship">
+        <di:waypoint x="330" y="330" />
+        <di:waypoint x="390" y="330" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ship_shipped_di" bpmnElement="Flow_ship_shipped">
+        <di:waypoint x="490" y="330" />
+        <di:waypoint x="552" y="330" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MessageFlow_raise_po_order_arrived_di" bpmnElement="MessageFlow_raise_po_order_arrived">
+        <di:waypoint x="280" y="150" />
+        <di:waypoint x="280" y="230" />
+        <di:waypoint x="150" y="230" />
+        <di:waypoint x="150" y="312" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MessageFlow_ship_await_shipment_di" bpmnElement="MessageFlow_ship_await_shipment">
+        <di:waypoint x="440" y="290" />
+        <di:waypoint x="440" y="210" />
+        <di:waypoint x="410" y="210" />
+        <di:waypoint x="410" y="128" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

@@ -1,0 +1,18 @@
+# SPEC.md §L pattern A: start -> task -> task -> end.
+#
+# Nothing here mentions a coordinate or an element id. Both are derived, which
+# is why recompiling the same source gives the same bytes.
+
+process linear "Linear flow" {
+  start submitted
+
+  service validate "Validate order" {
+    type "order-validate"
+  }
+
+  service charge "Charge card" {
+    type "payment-charge"
+  }
+
+  end done
+}

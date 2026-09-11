@@ -1,0 +1,65 @@
+# Employee onboarding, from an accepted offer to a provisioned hire.
+#
+# The old compiler's onboarding example, in the new language: the same process,
+# with the topology carried by nesting instead of by an edge list.
+
+message contract_signed "contract-signed" correlation "=candidateId"
+
+signal hiring_frozen "hiring-frozen"
+
+error provision_failed "PROVISION_FAILED" "Provisioning failed"
+
+process onboarding "Employee onboarding" {
+  doc "Runs from an accepted offer to a provisioned employee."
+
+  start offer_accepted "Offer accepted"
+
+  service create_record "Create HR record" {
+    type "hr-create-record"
+    retries 3
+    input candidateId = "=candidate.id"
+    output employeeId = "=result.employeeId"
+    header system = "workday"
+  }
+
+  receive await_contract "Await signed contract" {
+    message contract_signed
+  }
+
+  xor check_clear "Background check clear?" {
+    branch "clear" otherwise
+
+    branch "needs review" when "=checkResult != \"clear\"" {
+      user review_exception "Review exception" {
+        groups "hr-leads"
+        form "onboarding-exception"
+      }
+    }
+  }
+
+  service provision "Provision accounts" {
+    type "it-provision"
+    input employee = "=employeeId"
+  }
+
+  and workspace "Prepare workspace" {
+    branch {
+      service order_laptop "Order laptop" { type "it-order-laptop" }
+    }
+    branch {
+      service book_induction "Book induction" { type "hr-book-induction" }
+    }
+  }
+
+  end onboarded "Onboarded"
+
+  on await_contract catch timer "P14D" as contract_timeout "No contract in 14 days" {
+    throw freeze "Freeze the requisition" { signal hiring_frozen }
+    end withdrawn "Offer withdrawn" { terminate }
+  }
+
+  on provision catch error provision_failed as provision_error "Provisioning failed" {
+    user manual_provision "Provision by hand" { groups "it-ops" }
+    goto workspace
+  }
+}

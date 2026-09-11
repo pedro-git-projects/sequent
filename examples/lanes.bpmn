@@ -1,0 +1,167 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:modeler="http://camunda.org/schema/modeler/1.0" id="Definitions_1" targetNamespace="http://bpmn.io/schema/bpmn" exporter="sequent" exporterVersion="0.2.0" modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.6.0">
+  <bpmn:process id="Process_claim" name="Insurance claim" isExecutable="true">
+    <bpmn:laneSet id="LaneSet_Process_claim">
+      <bpmn:lane id="Lane_intake" name="Intake">
+        <bpmn:flowNodeRef>StartEvent_filed</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Activity_register</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Activity_explain</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Event_rejected</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="Lane_assessment" name="Assessment">
+        <bpmn:flowNodeRef>Activity_assess</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Gateway_payout</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="Lane_finance" name="Finance">
+        <bpmn:flowNodeRef>Activity_pay_out</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Event_settled</bpmn:flowNodeRef>
+      </bpmn:lane>
+    </bpmn:laneSet>
+    <bpmn:startEvent id="StartEvent_filed" name="Claim filed">
+      <bpmn:outgoing>Flow_filed_register</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="Activity_register" name="Register claim">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="claim-register" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_filed_register</bpmn:incoming>
+      <bpmn:outgoing>Flow_register_assess</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:userTask id="Activity_assess" name="Assess damage">
+      <bpmn:extensionElements>
+        <zeebe:userTask />
+        <zeebe:formDefinition formId="damage-assessment" />
+        <zeebe:assignmentDefinition candidateGroups="=assessors" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_register_assess</bpmn:incoming>
+      <bpmn:outgoing>Flow_assess_payout</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:exclusiveGateway id="Gateway_payout" name="Payout approved?" default="Flow_payout_pay_out">
+      <bpmn:incoming>Flow_assess_payout</bpmn:incoming>
+      <bpmn:outgoing>Flow_payout_explain</bpmn:outgoing>
+      <bpmn:outgoing>Flow_payout_pay_out</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:userTask id="Activity_explain" name="Explain the decision">
+      <bpmn:extensionElements>
+        <zeebe:userTask />
+        <zeebe:assignmentDefinition candidateGroups="=intake" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_payout_explain</bpmn:incoming>
+      <bpmn:outgoing>Flow_explain_rejected</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:endEvent id="Event_rejected" name="Claim rejected">
+      <bpmn:incoming>Flow_explain_rejected</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:serviceTask id="Activity_pay_out" name="Pay the claim">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="payment-transfer" />
+        <zeebe:ioMapping>
+          <zeebe:input source="=assessment.amount" target="amount" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_payout_pay_out</bpmn:incoming>
+      <bpmn:outgoing>Flow_pay_out_settled</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="Event_settled" name="Claim settled">
+      <bpmn:incoming>Flow_pay_out_settled</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_filed_register" sourceRef="StartEvent_filed" targetRef="Activity_register" />
+    <bpmn:sequenceFlow id="Flow_register_assess" sourceRef="Activity_register" targetRef="Activity_assess" />
+    <bpmn:sequenceFlow id="Flow_assess_payout" sourceRef="Activity_assess" targetRef="Gateway_payout" />
+    <bpmn:sequenceFlow id="Flow_payout_explain" name="rejected" sourceRef="Gateway_payout" targetRef="Activity_explain">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=not(approved)</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_explain_rejected" sourceRef="Activity_explain" targetRef="Event_rejected" />
+    <bpmn:sequenceFlow id="Flow_payout_pay_out" name="approved" sourceRef="Gateway_payout" targetRef="Activity_pay_out" />
+    <bpmn:sequenceFlow id="Flow_pay_out_settled" sourceRef="Activity_pay_out" targetRef="Event_settled" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Process_claim">
+      <bpmndi:BPMNShape id="Lane_assessment_di" bpmnElement="Lane_assessment" isHorizontal="true">
+        <dc:Bounds x="50" y="180" width="798" height="140" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Lane_finance_di" bpmnElement="Lane_finance" isHorizontal="true">
+        <dc:Bounds x="50" y="320" width="798" height="140" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Lane_intake_di" bpmnElement="Lane_intake" isHorizontal="true">
+        <dc:Bounds x="50" y="40" width="798" height="140" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="StartEvent_filed_di" bpmnElement="StartEvent_filed">
+        <dc:Bounds x="52" y="92" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="42" y="133" width="56" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_register_di" bpmnElement="Activity_register">
+        <dc:Bounds x="150" y="70" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_assess_di" bpmnElement="Activity_assess">
+        <dc:Bounds x="310" y="210" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_payout_di" bpmnElement="Gateway_payout" isMarkerVisible="true">
+        <dc:Bounds x="475" y="225" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="472" y="192" width="57" height="28" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_explain_di" bpmnElement="Activity_explain">
+        <dc:Bounds x="610" y="70" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_rejected_di" bpmnElement="Event_rejected">
+        <dc:Bounds x="772" y="92" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="752" y="133" width="77" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_pay_out_di" bpmnElement="Activity_pay_out">
+        <dc:Bounds x="610" y="350" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_settled_di" bpmnElement="Event_settled">
+        <dc:Bounds x="772" y="372" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="756" y="413" width="69" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_filed_register_di" bpmnElement="Flow_filed_register">
+        <di:waypoint x="88" y="110" />
+        <di:waypoint x="150" y="110" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_register_assess_di" bpmnElement="Flow_register_assess">
+        <di:waypoint x="250" y="110" />
+        <di:waypoint x="280" y="110" />
+        <di:waypoint x="280" y="250" />
+        <di:waypoint x="310" y="250" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_assess_payout_di" bpmnElement="Flow_assess_payout">
+        <di:waypoint x="410" y="250" />
+        <di:waypoint x="475" y="250" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_payout_explain_di" bpmnElement="Flow_payout_explain">
+        <di:waypoint x="500" y="225" />
+        <di:waypoint x="570" y="225" />
+        <di:waypoint x="570" y="110" />
+        <di:waypoint x="610" y="110" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="529" y="230" width="43" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_explain_rejected_di" bpmnElement="Flow_explain_rejected">
+        <di:waypoint x="710" y="110" />
+        <di:waypoint x="772" y="110" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_payout_pay_out_di" bpmnElement="Flow_payout_pay_out">
+        <di:waypoint x="500" y="275" />
+        <di:waypoint x="590" y="275" />
+        <di:waypoint x="590" y="390" />
+        <di:waypoint x="610" y="390" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="529" y="256" width="50" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_pay_out_settled_di" bpmnElement="Flow_pay_out_settled">
+        <di:waypoint x="710" y="390" />
+        <di:waypoint x="772" y="390" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

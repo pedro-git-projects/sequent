@@ -1,0 +1,45 @@
+# An expanded subprocess, a call activity and a multi-instance task.
+#
+# The subprocess is laid out by a full, independent run of the formatter on its
+# own scope; the outer layout then treats it as a single node of that size.
+
+error out_of_stock "OUT_OF_STOCK" "Out of stock"
+
+process fulfilment "Warehouse fulfilment" {
+  start ordered "Order confirmed"
+
+  subprocess pick_pack "Pick and pack" {
+    start begin_pick
+    service reserve "Reserve stock" { type "wms-reserve" }
+    service pick_lines "Pick a line" {
+      type "wms-pick"
+      each line in "=order.lines"
+      collect picked from "=pickResult"
+    }
+    service pack "Pack the parcel" { type "wms-pack" }
+    end packed
+  }
+
+  call book_carrier "Book a carrier" {
+    calls "carrier-booking"
+    propagate
+    input weight = "=parcel.weightKg"
+  }
+
+  business classify "Classify for customs" {
+    decision "customs-classification"
+    result tariff
+  }
+
+  script price_shipping "Price the shipping" {
+    expression "=parcel.weightKg * rate"
+    result shippingCost
+  }
+
+  end dispatched "Dispatched"
+
+  on pick_pack catch error out_of_stock as stock_out "Out of stock" {
+    service backorder "Raise a backorder" { type "wms-backorder" }
+    end backordered "Backordered"
+  }
+}

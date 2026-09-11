@@ -1,0 +1,29 @@
+# Two pools exchanging messages. Sequence flow is "->"; message flow is "~>",
+# so a reader never has to work out which kind of connection a line describes.
+
+message purchase_order "purchase-order" correlation "=orderId"
+message shipment_notice "shipment-notice" correlation "=orderId"
+
+collaboration trade "Buyer and seller" {
+  pool buyer "Buyer" {
+    start need "Need identified"
+    service raise_po "Raise purchase order" { type "po-create" }
+    wait await_shipment "Await shipment notice" {
+      message shipment_notice
+    }
+    service receive_goods "Receive goods" { type "wms-receive" }
+    end received "Goods received"
+  }
+
+  pool seller "Seller" {
+    start order_arrived "Order received" {
+      message purchase_order
+    }
+    service confirm "Confirm order" { type "order-confirm" }
+    service ship "Ship goods" { type "carrier-book" }
+    end shipped "Goods shipped"
+  }
+
+  raise_po ~> order_arrived "purchase order"
+  ship ~> await_shipment "shipment notice"
+}
