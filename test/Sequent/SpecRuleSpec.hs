@@ -6,7 +6,7 @@
 -- you can run rather than an answer you have to take on trust.
 module Sequent.SpecRuleSpec (spec) where
 
-import Data.List (nub, sort)
+import Data.List (nub, sort, sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -16,7 +16,7 @@ import Sequent.Bpmn.Semantic
 import Sequent.Layout
 import Sequent.Layout.Branches
 import Sequent.Layout.Labels (externalLabelBox, labelledSegment)
-import Sequent.Text.Metrics (TextBox (..), helvetica12)
+import Sequent.Text.Metrics (TextBox (..), helvetica12, wrapText)
 import Sequent.Layout.Constants
 import Sequent.Layout.Routing (boundaryExceptionRoute, routeCost)
 import Sequent.Layout.Rules
@@ -685,6 +685,21 @@ spec = do
           )
             `shouldBe` (True, True, True)
 
+    it "test_LABEL_012_a_wrapped_label_reserves_the_width_it_was_wrapped_to" $
+      -- BPMN DI hands the renderer a bounds rectangle and the element's name;
+      -- the renderer breaks the name itself and need not agree with us about
+      -- where. Camunda Modeler sets external labels a point smaller than we
+      -- measure them, fits more words per line, and centres the wider result on
+      -- the box we declared — so a box reported at the width of our longest
+      -- line is overrun on both sides. A label that wraps is therefore reported
+      -- at the width it was wrapped to; one that fits on a line is not, because
+      -- there is no second line for a different wrapping to pull up.
+      ( tbWidth (externalLabelBox helvetica12 "Should the previous process be cancelled?")
+      , tbWidth (externalLabelBox helvetica12 "Insertion complete")
+      , tbWidth (externalLabelBox helvetica12 "yes") < labelMaxW
+      )
+        `shouldBe` (labelMaxW, labelMaxW, True)
+
     it "test_LABEL_003_a_caption_too_long_for_two_lines_keeps_all_of_them" $
       -- The wrapped text is the label. Nothing is ellipsised away, because the
       -- ellipsis would never reach the file (LABEL-006: never hide a label).
@@ -744,6 +759,60 @@ spec = do
       , diamondHits r (lbRect lb)
       ]
         `shouldBe` []
+
+    it "test_LABEL_005_a_backward_segment_anchors_the_label_at_its_own_start" $
+      -- LABEL-005 anchors at the segment's start and overhangs toward the
+      -- target. Both halves are about the direction of travel: a loopback's
+      -- first horizontal segment runs right-to-left, and reading them as
+      -- page-left and page-right puts the caption off the end of the line,
+      -- floating beside an arrow it no longer belongs to.
+      let l = layoutOf loopProcess
+          lb = lbRect (labelOfFlow l "Flow_g_a")
+          r = routeOf l "Flow_g_a"
+          seg = labelledSegment r
+       in case seg of
+            Just (Segment a b) ->
+              (ptX b < ptX a, rectRight lb <= ptX a, rX lb >= ptX b)
+                `shouldBe` (True, True, True)
+            Nothing -> expectationFailure "no labelled segment"
+
+    it "test_LABEL_009_a_message_flow_label_does_not_straddle_a_pool_border" $
+      -- Message flows are routed after phase 9, so no scope's label pass ever
+      -- saw them. Leaving the caption unplaced does not leave it unlabelled:
+      -- the name is serialised either way, and a modeller with no bounds to go
+      -- on drops it at the middle of the flow — for a route crossing the
+      -- inter-pool gap, squarely on a pool border.
+      let l = layoutOf namedMessageFlows
+          geo = lrGeometry l
+          pools = Map.elems (geoPools geo)
+          straddles r = [p | p <- pools, rectsOverlap r p, not (rectContains p r)]
+       in [ (show k, length (straddles (lbRect lb)))
+          | (k, lb) <- Map.toAscList (geoLabels geo)
+          , not (null (straddles (lbRect lb)))
+          ]
+            `shouldBe` []
+
+    it "test_LANE_004_a_lane_insets_its_content_from_its_own_border" $
+      -- The right-hand padding was there because laneW adds it; the left-hand
+      -- one because nobody did, so the first node sat against the border and
+      -- its caption hung outside the lane altogether.
+      let l = layoutOf lanedStart
+          lane = head (sortOn rY (Map.elems (geoLanes (lrGeometry l))))
+          node = shapeOf l "StartEvent_s"
+          lb = lbRect (labelOf l "StartEvent_s")
+       in (rX node - rX lane >= containerPadX, rectContains lane lb)
+            `shouldBe` (True, True)
+
+    it "test_LABEL_010_an_annotation_reserves_room_for_its_bracket" $
+      -- The bracket down an annotation's left side is not text space, and the
+      -- renderer supplies its own padding on top. Sizing the box to the text
+      -- plus LABEL_PAD alone leaves the last line past the bracket.
+      let l = layoutOf annotatedTask
+          r = head (Map.elems (geoArtifacts (lrGeometry l)))
+          text = "Three attempts, then an incident"
+          fits = tbWidth (wrapAt (rW r - 2 * labelPad - annotBracket) text)
+       in (fits <= rW r - 2 * labelPad - annotBracket, rH r >= 2 * lineH)
+            `shouldBe` (True, True)
 
     it "test_LABEL_011_labels_are_in_the_geometry" $
       Map.keys (geoLabels (lrGeometry (layoutOf "start s \"Started\"\nend e")))
@@ -936,6 +1005,26 @@ mixedOutcomes =
   \end aside \"Aside\"\nflow hub -> aside \"also\"\n\
   \on hub catch error boom as failed \"Failed\" { end abandoned \"Abandoned\" { terminate } } }"
 
+-- | A lane whose first node is a captioned start event: the caption is wider
+-- than the event, so it hangs out of the lane unless the content is inset.
+lanedStart :: Text
+lanedStart =
+  "lane one \"One\" { start s \"Claim filed\"\nservice a \"Register claim\" { type \"r\" } }\n\
+  \lane two \"Two\" { user b \"Assess damage\"\nend e \"Settled\" }"
+
+-- | Two pools whose message flows are named, so the captions have to be placed
+-- rather than left to the renderer.
+namedMessageFlows :: Text
+namedMessageFlows =
+  "collaboration c {\npool x \"X\" { start s\ntask a \"A\"\nend e }\n\
+  \pool y \"Y\" { start t\ntask b \"B\"\nend f }\na ~> b \"the handover\" }"
+
+-- | A task carrying a note longer than one line of an annotation's usable width.
+annotatedTask :: Text
+annotatedTask =
+  "start s\nservice charge \"Charge card\" { type \"pay\" }\nend e\n\
+  \note retry_note \"Three attempts, then an incident\" on charge"
+
 twoBoundaries, collabProcess, unevenLanes :: Text
 twoBoundaries = "error one \"ONE\"\nerror two \"TWO\"\nprocess p { start s\ntask t\nend e\non t catch error one as first { end a }\non t catch error two as second { end b } }"
 collabProcess = "collaboration c { pool x { start s\ntask a\nend e } pool y { start t\ntask b\nend f } a ~> b }"
@@ -957,6 +1046,9 @@ everyPattern =
        , ("two labelled boundary events", twoLabelledBoundaries)
        , ("a branch with mixed outcomes", mixedOutcomes)
        , ("a gateway caption too long for two lines", longGatewayCaption)
+       , ("named message flows", namedMessageFlows)
+       , ("a captioned start event in a lane", lanedStart)
+       , ("a task with a long note", annotatedTask)
        ]
 
 structuredPatterns :: [(String, Text)]
@@ -977,6 +1069,14 @@ structuredPatterns =
   ]
 
 -- Helpers ---------------------------------------------------------------------
+
+wrapAt :: Int -> Text -> TextBox
+wrapAt w t = wrapText helvetica12 w 4 t
+
+labelOfFlow :: LayoutResult -> Text -> LabelBox
+labelOfFlow l f = case Map.lookup (LkFlow (FlowId f)) (geoLabels (lrGeometry l)) of
+  Just lb -> lb
+  Nothing -> error ("no label for " ++ T.unpack f)
 
 labelOf :: LayoutResult -> Text -> LabelBox
 labelOf l n = case Map.lookup (LkNode (NodeId n)) (geoLabels (lrGeometry l)) of
