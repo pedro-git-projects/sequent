@@ -151,7 +151,7 @@
       <bpmndi:BPMNShape id="Gateway_check_clear_di" bpmnElement="Gateway_check_clear" isMarkerVisible="true">
         <dc:Bounds x="485" y="155" width="50" height="50" />
         <bpmndi:BPMNLabel>
-          <dc:Bounds x="477" y="210" width="67" height="28" />
+          <dc:Bounds x="465" y="210" width="90" height="28" />
         </bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Activity_review_exception_di" bpmnElement="Activity_review_exception">
@@ -166,7 +166,7 @@
       <bpmndi:BPMNShape id="Gateway_workspace_di" bpmnElement="Gateway_workspace">
         <dc:Bounds x="1235" y="155" width="50" height="50" />
         <bpmndi:BPMNLabel>
-          <dc:Bounds x="1193" y="122" width="57" height="28" />
+          <dc:Bounds x="1160" y="122" width="90" height="28" />
         </bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Activity_order_laptop_di" bpmnElement="Activity_order_laptop">
@@ -187,13 +187,13 @@
       <bpmndi:BPMNShape id="Event_contract_timeout_di" bpmnElement="Event_contract_timeout">
         <dc:Bounds x="352" y="202" width="36" height="36" />
         <bpmndi:BPMNLabel>
-          <dc:Bounds x="286" y="243" width="74" height="28" />
+          <dc:Bounds x="270" y="243" width="90" height="28" />
         </bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Event_freeze_di" bpmnElement="Event_freeze">
         <dc:Bounds x="492" y="362" width="36" height="36" />
         <bpmndi:BPMNLabel>
-          <dc:Bounds x="482" y="403" width="57" height="28" />
+          <dc:Bounds x="465" y="403" width="90" height="28" />
         </bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Event_withdrawn_di" bpmnElement="Event_withdrawn">
@@ -205,7 +205,7 @@
       <bpmndi:BPMNShape id="Event_provision_error_di" bpmnElement="Event_provision_error">
         <dc:Bounds x="942" y="202" width="36" height="36" />
         <bpmndi:BPMNLabel>
-          <dc:Bounds x="885" y="243" width="65" height="28" />
+          <dc:Bounds x="860" y="243" width="90" height="28" />
         </bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Activity_manual_provision_di" bpmnElement="Activity_manual_provision">
