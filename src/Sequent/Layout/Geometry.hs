@@ -83,7 +83,13 @@ assignGeometry metrics font sc layers sizes axisMap bands pins =
     -- column containing a pinned node is moved onto the pin and everything to
     -- its right translates with it, so a forward edge into the pinned node
     -- cannot end up running backwards.
-    columns = applyPins pins layers sizes (columnsFor metrics font sc layers sizes)
+    -- LANE-004 / HC-003: a lane's contents are inset from its border by
+    -- CONTAINER_PAD_X, the same as a pool's. Starting the columns at MARGIN
+    -- instead put the first node against the lane's left edge and its caption
+    -- outside the lane altogether — the right-hand padding was there because
+    -- 'laneW' adds it, the left-hand one because nobody did.
+    columns = applyPins pins layers sizes (columnsFor metrics font sc layers sizes contentLeft)
+    contentLeft = if hasLanes then margin + containerPadX else margin
     colByIndex = Map.fromList [(colIndex c, c) | c <- columns]
 
     axes = laneAxes metrics bands
@@ -223,8 +229,11 @@ columnsFor
   -> Scope
   -> Map NodeId Int
   -> Map NodeId (Int, Int)
+  -> Int
+  -- ^ Left edge of the content area: MARGIN, or inset by the container padding
+  -- when the scope has lanes.
   -> [Column]
-columnsFor metrics font sc layers sizes = go 0 margin
+columnsFor metrics font sc layers sizes left0 = go 0 left0
   where
     -- Boundary events hang on a host border and never claim column width.
     members c =
