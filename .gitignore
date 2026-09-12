@@ -1,3 +1,5 @@
 dist-newstyle/
 *.hi
 *.o
+examples/murex.sq
+examples/murex.bpmn
