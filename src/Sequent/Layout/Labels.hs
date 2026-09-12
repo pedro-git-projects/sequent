@@ -124,12 +124,40 @@ internalLabel fm r marker label =
 -- lines for text the renderer will set in three hides it from the formatter
 -- alone.
 externalLabelBox :: FontMetrics -> Text -> TextBox
-externalLabelBox fm = boxOf fm . wrapToLines fm labelMaxW
+externalLabelBox fm = wrappedBox fm labelMaxW
 
 -- | LABEL-005: a sequence-flow label. Same wrapping rules as an external
 -- label; the difference is only where it is anchored.
 flowLabelBox :: FontMetrics -> Text -> TextBox
-flowLabelBox fm = boxOf fm . wrapToLines fm labelMaxW
+flowLabelBox fm = wrappedBox fm labelMaxW
+
+-- | Wrap a label and report the width a renderer may actually use for it.
+--
+-- The widest line /our/ wrapping produced is not that width. BPMN DI hands the
+-- renderer a bounds rectangle and the element's @name@; the renderer breaks the
+-- name itself, and it does not have to agree with us about where. Camunda
+-- Modeler sets external labels a point smaller than we measure them, so it fits
+-- more words per line and comes out with fewer, wider lines — centred on the
+-- box we declared. A box reported at the width of our longest line is then
+-- overrun to the left and the right by exactly the amount the two wrappings
+-- disagree, which is how a caption measured 59 px wide ends up drawn across a
+-- connector 15 px beyond its own edge.
+--
+-- So a label that wraps at all is reported at the width it was wrapped /to/.
+-- Any renderer breaking the same text at that width produces lines no wider,
+-- whatever font it uses; the guarantee holds without knowing which renderer it
+-- is. A label that fits on one line keeps its own width — there is no second
+-- line for a different wrapping to pull up, and reserving the full width for
+-- @"yes"@ would push every anchor around it for nothing.
+--
+-- The height stays the line count we measured. Over-reserving vertically is
+-- safe: a renderer that fits more per line draws fewer of them.
+wrappedBox :: FontMetrics -> Int -> Text -> TextBox
+wrappedBox fm maxW t
+  | length (tbLines box) > 1 = box {tbWidth = maxW}
+  | otherwise = box
+  where
+    box = boxOf fm (wrapToLines fm maxW t)
 
 -- | How much vertical room a node's external label claims beside it, for
 -- BRANCH-002's bounding box. Events label below, gateways above; both amounts
@@ -224,15 +252,29 @@ placeExternalLabelSized shape (w0, h0) anchor = case anchor of
 -- scores.
 placeFlowLabel :: Maybe Int -> Route -> TextBox -> Rect
 placeFlowLabel stackX route box = case firstHorizontal (routeSegments (rtPoints route)) of
-  Just (Segment a b) ->
-    let x0 = maybe (min (ptX a) (ptX b) + u) (+ u) stackX
-     in Rect x0 (ptY a - flowLabelOffset - h) w h
+  Just (Segment a b) -> Rect (anchorX a b) (ptY a - flowLabelOffset - h) w h
   Nothing -> case routeSegments (rtPoints route) of
     (Segment a _ : _) -> Rect (ptX a + flowLabelOffset) (ptY a + u) w h
     [] -> Rect 0 0 w h
   where
     w = max 1 (tbWidth box)
     h = max 1 (tbHeight box)
+
+    -- LABEL-005 anchors the label at the segment's __start__, 1U in, and lets
+    -- it overhang toward the /target/ when the segment is shorter than the
+    -- text. Both halves are about the direction of travel, not about the
+    -- direction of the page: a loopback's first horizontal segment runs
+    -- right-to-left, and anchoring it at the leftmost x puts the label at the
+    -- segment's end, while overhanging rightward walks it off the line
+    -- entirely — a caption floating in space beside an arrow it no longer
+    -- belongs to.
+    --
+    -- The shared stack of a split comb is the same story: every peel segment of
+    -- a comb runs left-to-right out of the trunk, so a segment travelling the
+    -- other way is not part of that comb and takes its own anchor.
+    anchorX a b
+      | ptX b >= ptX a = maybe (ptX a + u) id stackX
+      | otherwise = ptX a - u - w
 
 -- | EDGE-018: the one segment of its own route a flow label may overlap — the
 -- one it annotates, which it is drawn offset from. Every /other/ segment of the
