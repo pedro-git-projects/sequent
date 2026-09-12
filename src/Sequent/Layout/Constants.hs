@@ -28,6 +28,7 @@ module Sequent.Layout.Constants
   , storeH
   , annotWMin
   , annotWMax
+  , annotBracket
     -- * Spacing (§B.2)
   , nodeGapX
   , nodeGapXMin
@@ -111,6 +112,14 @@ evSize = 36
 subMinW, subMinH :: Int
 subMinW = 24 * u
 subMinH = 16 * u
+
+-- | LABEL-010: a text annotation is drawn as a bracket down its left side,
+-- and the bracket is not text space. Reserving a unit for it is what keeps the
+-- renderer's own wrapping inside the box we sized — without it the usable width
+-- we measured against is wider than the one the renderer has, and the last line
+-- spills past the bracket.
+annotBracket :: Int
+annotBracket = u
 
 dataW, dataH, storeW, storeH, annotWMin, annotWMax :: Int
 dataW = 36

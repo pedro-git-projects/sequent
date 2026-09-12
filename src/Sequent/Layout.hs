@@ -395,7 +395,7 @@ layoutOneScope cfg laneOrder sc subSize subAxis
         (artifacts, assocRoutes) = placeArtifacts font sc shapes1
 
         -- Phase 9.
-        labels = placeAllLabels font sc shapes1 (rrRoutes routed)
+        labels = placeAllLabels font sc shapes1 (rrRoutes routed) (grLaneRects geom0)
 
         geomA =
           Geometry
@@ -546,8 +546,15 @@ applyOverrides ov rr
 -- a flow label to a specific segment, while LABEL-002 and LABEL-003 are MEDIUM
 -- and come with an anchor ladder. Placing the movable ones second is what lets
 -- the ladder do its job.
-placeAllLabels :: FontMetrics -> Scope -> Map NodeId Rect -> Map FlowId Route -> Map LabelKey LabelBox
-placeAllLabels font sc shapes routes = foldl' addNode flowLabels (scNodes sc)
+placeAllLabels
+  :: FontMetrics
+  -> Scope
+  -> Map NodeId Rect
+  -> Map FlowId Route
+  -> Map LaneId Rect
+  -- ^ LANE-004: a label belongs to its node's lane as much as the node does.
+  -> Map LabelKey LabelBox
+placeAllLabels font sc shapes routes laneRects = foldl' addNode flowLabels (scNodes sc)
   where
     flowLabels = foldl' addFlow Map.empty (Map.toAscList routes)
 
@@ -569,7 +576,7 @@ placeAllLabels font sc shapes routes = foldl' addNode flowLabels (scNodes sc)
                   -- anchor would be rejected and the ladder would collapse to
                   -- its first entry (LABEL-002/003).
                   obstacles = Map.delete (fnId n) shapes
-                  chosen = firstFree acc obstacles allSegments candidates
+                  chosen = firstFree acc obstacles allSegments (within (fnLane n)) candidates
                in Map.insert (LkNode (fnId n)) (LabelBox chosen (tbLines box)) acc
 
     -- LABEL-006's last rung: "if none is free, widen the owning gap by
@@ -633,7 +640,7 @@ placeAllLabels font sc shapes routes = foldl' addNode flowLabels (scNodes sc)
             obstacleSegs =
               concatMap (routeSegments . rtPoints) (Map.elems (Map.delete fid routes))
                 ++ [s | s <- routeSegments (rtPoints route), Just s /= labelledSegment route]
-            chosen = firstFree acc obstacles obstacleSegs fallbacks
+            chosen = firstFree acc obstacles obstacleSegs (const True) fallbacks
          in Map.insert (LkFlow fid) (LabelBox chosen (tbLines box)) acc
 
     flowById = scopeFlowMap sc
@@ -663,7 +670,16 @@ placeAllLabels font sc shapes routes = foldl' addNode flowLabels (scNodes sc)
     -- So the whole stack moves right by however much its worst member needs.
     -- Moving one label would break the alignment that is the point of the rule;
     -- moving all of them keeps the column and costs a few pixels of run.
-    leftEdgeFor fid route box = maximum (base : map inkClear mates)
+    leftEdgeFor fid route box
+      -- A label anchored to a segment that travels right-to-left is mirrored:
+      -- it hangs off the segment's start toward its target, which is leftward.
+      -- Neither the stack nor the clearance below applies to it. The stack is a
+      -- property of a split comb, whose peel segments all run out of the trunk
+      -- rightward; and a backward segment belongs to a loopback, which leaves
+      -- through N or S (EDGE-013) and is therefore never level with the glyph
+      -- it left.
+      | not (travelsRight route) = rX (placeFlowLabel Nothing route box)
+      | otherwise = maximum (base : map inkClear mates)
       where
         src = maybe (NodeId "") sfSource (Map.lookup fid flowById)
         stacked = length (namedOut src) >= 2
@@ -682,6 +698,12 @@ placeAllLabels font sc shapes routes = foldl' addNode flowLabels (scNodes sc)
               reach = inkReachRight (Map.lookup src (scopeNodeMap sc)) gw (rY lb) (rectBottom lb)
           _ -> 0
 
+    -- Which way the segment a label is anchored to runs. Everything LABEL-005
+    -- says about anchoring and overhang is in terms of travel, not of the page.
+    travelsRight route = case labelledSegment route of
+      Just (Segment a b) -> ptX b >= ptX a
+      Nothing -> True
+
     -- How far right of its centre a shape's ink reaches, over a horizontal band
     -- @[y0, y1]@. A gateway is a diamond, so its reach shrinks with distance
     -- from its centre line; everything else is measured as its box.
@@ -697,9 +719,18 @@ placeAllLabels font sc shapes routes = foldl' addNode flowLabels (scNodes sc)
           | otherwise = min (abs (y0 - cy)) (abs (y1 - cy))
         isGateway = maybe False nodeIsGateway kind
 
-    firstFree placed shapes' segs cands = case [c | c <- cands, clear placed shapes' segs c] of
+    -- LANE-004: a node's caption sits in the node's own lane. A lane is sized
+    -- from the shapes it holds and from the column grid, neither of which knows
+    -- how wide a caption is, so a label centred under a node near the lane's
+    -- edge hangs outside it — text belonging to a lane, drawn in the next one
+    -- or in no lane at all.
+    within lane r = case lane >>= (`Map.lookup` laneRects) of
+      Nothing -> True
+      Just lr -> rectContains lr r
+
+    firstFree placed shapes' segs inside cands = case [c | c <- cands, inside c, clear placed shapes' segs c] of
       (c : _) -> c
-      [] -> case cands of
+      [] -> case [c | c <- cands, clear placed shapes' segs c] ++ cands of
         (c : _) -> c
         [] -> emptyRect
 
@@ -791,11 +822,20 @@ placeArtifacts font sc shapes = (Map.fromList rects, Map.fromList routes)
     sizeOf art = case artKind art of
       AkDataObject -> (dataW, dataH)
       AkDataStore -> (storeW, storeH)
+      -- LABEL-010: the text sits inside the annotation with LABEL_PAD around it
+      -- and a bracket band down the left. Two separate things have to fit: the
+      -- width comes from the text, and the height from the text re-wrapped at
+      -- the width the /renderer/ will have — a unit narrower again, because it
+      -- supplies its own padding and need not use ours. Measuring the height at
+      -- our own usable width is how a line that fits here spills past the
+      -- bracket there.
       AkTextAnnotation ->
-        let box = wrapText font (annotWMax - 2 * labelPad) 4 (fromMaybe "" (artText art))
-         in ( max annotWMin (min annotWMax (tbWidth box + 2 * labelPad))
-            , max (2 * u) (tbHeight box + 2 * labelPad)
-            )
+        let text = fromMaybe "" (artText art)
+            usable = annotWMax - 2 * labelPad - annotBracket
+            box = wrapText font usable 4 text
+            w = max annotWMin (min annotWMax (tbWidth box + 2 * labelPad + annotBracket))
+            drawn = wrapText font (w - 2 * labelPad - annotBracket - u) 4 text
+         in (w, max (2 * u) (tbHeight drawn + 2 * labelPad))
 
 -- Advisories --------------------------------------------------------------------
 
@@ -840,7 +880,7 @@ advisories metrics sc structure strips converged brokenPins =
 -- | LANE-012: pools stack vertically, left-aligned, all the same width so their
 -- right edges line up — a strong regularity cue in collaboration diagrams.
 stackPools :: LayoutConfig -> SemanticGraph -> Collaboration -> LayoutResult
-stackPools cfg g col = withMessageFlows nodesById col (foldl' step emptyResult (zip [0 ..] participants))
+stackPools cfg g col = withMessageFlows (lcFont cfg) nodesById col (foldl' step emptyResult (zip [0 ..] participants))
   where
     participants = sortOn partOrder (colParticipants col)
     procById = Map.fromList [(procId p, p) | p <- sgProcesses g]
@@ -917,15 +957,68 @@ stackPools cfg g col = withMessageFlows nodesById col (foldl' step emptyResult (
 -- (LABEL-003), and the label placer could not have known. The obstacle is
 -- introduced here and the label is moved here, by the same ladder phase 9
 -- would have used.
-withMessageFlows :: Map NodeId FlowNode -> Collaboration -> LayoutResult -> LayoutResult
-withMessageFlows byId col res =
+withMessageFlows :: FontMetrics -> Map NodeId FlowNode -> Collaboration -> LayoutResult -> LayoutResult
+withMessageFlows font byId col res =
   res
-    { lrGeometry = geo {geoRoutes = Map.union routes (geoRoutes geo), geoLabels = labels'}
+    { lrGeometry = geo {geoRoutes = Map.union routes (geoRoutes geo), geoLabels = withMessageLabels labels'}
     , lrViolations = lrViolations res ++ stillCrossed
     }
   where
     geo = lrGeometry res
     routes = Map.fromList [(mfId m, r) | m <- colMessageFlows col, Just r <- [route m]]
+
+    -- LABEL-009. Placed here for the same reason the routes are: a message flow
+    -- belongs to the collaboration, so no scope's phase 9 ever saw it. Leaving
+    -- it unplaced does not mean unlabelled — the name is still serialised, and
+    -- a modeller with no DI bounds to go on drops the text at the middle of the
+    -- flow, which for a route crossing the inter-pool gap is squarely on a pool
+    -- border.
+    withMessageLabels acc = foldl' addMessageLabel acc (Map.toAscList routes)
+
+    nameOf fid = case [mfName m | m <- colMessageFlows col, mfId m == fid] of
+      (Just t : _) | not (T.null t) -> Just t
+      _ -> Nothing
+
+    addMessageLabel acc (fid, r) = case nameOf fid of
+      Nothing -> acc
+      Just t ->
+        let box = flowLabelBox font t
+            cands = messageAnchors r (max 1 (tbWidth box)) (max 1 (tbHeight box))
+            placed = case [c | c <- cands, freeFor acc c] of
+              (c : _) -> c
+              [] -> case cands of
+                (c : _) -> c
+                [] -> emptyRect
+         in Map.insert (LkFlow fid) (LabelBox placed (tbLines box)) acc
+
+    -- The longest segment carries the label: for the canonical message flow
+    -- that is the vertical run in the inter-pool gap, which is the one stretch
+    -- of the route that belongs to neither pool.
+    messageAnchors r w h = case longest of
+      Just (Segment a b)
+        | ptX a == ptX b ->
+            [ Rect (ptX a + flowLabelOffset) (mid (ptY a) (ptY b) - h `div` 2) w h
+            , Rect (ptX a - flowLabelOffset - w) (mid (ptY a) (ptY b) - h `div` 2) w h
+            ]
+        | otherwise ->
+            [ Rect (mid (ptX a) (ptX b) - w `div` 2) (ptY a - flowLabelOffset - h) w h
+            , Rect (mid (ptX a) (ptX b) - w `div` 2) (ptY a + flowLabelOffset) w h
+            ]
+      Nothing -> []
+      where
+        longest = case sortOn (negate . segLength) (routeSegments (rtPoints r)) of
+          (s : _) -> Just s
+          [] -> Nothing
+        mid p q = (p + q) `div` 2
+
+    -- A label may sit inside a pool or outside every pool. What it may not do
+    -- is straddle a border, which is exactly where the default placement put it.
+    freeFor acc c =
+      not (any straddles (Map.elems (geoPools geo)))
+        && not (any (rectsOverlap c) (Map.elems (geoShapes geo)))
+        && not (any (rectsOverlap c . lbRect) (Map.elems acc))
+      where
+        straddles p = rectsOverlap c p && not (rectContains p c)
 
     -- LABEL-006's ladder, re-run against the geometry the message flows are
     -- part of. A label that was already clear is left exactly where it was.
