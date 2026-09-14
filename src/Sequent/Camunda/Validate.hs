@@ -72,7 +72,48 @@ scopeDiags prov _msgs sc = concatMap nodeDiags (scNodes sc)
     adv i msg = withSpan i (diagnostic Advisory CamundaValidationError msg)
     named n = "'" <> fromMaybe (unNodeId (fnId n)) (fnName n) <> "'"
 
-    nodeDiags n = execDiags n (fnExec n) ++ loopDiags n ++ timerDiags n
+    nodeDiags n = execDiags n (fnExec n) ++ throwJobDiags n ++ loopDiags n ++ timerDiags n
+
+    -- Camunda 8 implements a throwing message event as a job: the broker
+    -- creates one and a worker publishes the message. Two things follow, and
+    -- only the second is visible without deploying.
+    --
+    -- A message throw or end event with no job type is rejected at deployment
+    -- with "must have exactly one 'zeebe:taskDefinition' extension element" —
+    -- valid BPMN, undeployable process, which is exactly the class of fault
+    -- this module exists to catch. It is a warning rather than an error because
+    -- a model may legitimately be written before its worker is named, and
+    -- because BPMN itself asks for nothing here.
+    --
+    -- A job type anywhere else on an event is an error: the syntax allows it on
+    -- any end or throw step, since which of them may carry one is a Camunda
+    -- rule about the event's /trigger/ and not something a keyword can decide.
+    throwJobDiags n = case fnKind n of
+      NkEvent (EventSpec fl d)
+        | throwsMessage fl d, fnExec n == ExNone ->
+            [ withHint
+                "Zeebe creates a job for the worker that publishes the message: type \"publish-shipment\""
+                ( withSpan
+                    (fnId n)
+                    ( diagnostic
+                        Warning
+                        CamundaValidationError
+                        (named n <> " throws a message but has no job type; Camunda 8 will reject the deployment")
+                    )
+                )
+            ]
+        | not (throwsMessage fl d), hasJob (fnExec n) ->
+            [ withHint
+                "only a message throw or end event runs a job; give this event a message, or drop the job type"
+                (err (fnId n) (named n <> " has a job type but does not throw a message"))
+            ]
+      _ -> []
+
+    throwsMessage fl d = fl `elem` [EvEnd, EvIntermediateThrow] && isMessageDef d
+    isMessageDef (Just (EdMessage _)) = True
+    isMessageDef _ = False
+    hasJob (ExService _) = True
+    hasJob _ = False
 
     execDiags n meta = case meta of
       ExNone -> []
