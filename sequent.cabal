@@ -43,13 +43,16 @@ library
         Sequent.Language.Parser
         Sequent.Language.Pretty
         Sequent.Language.Resolve
+        Sequent.Language.Emit
         Sequent.Bpmn.Id
         Sequent.Bpmn.Semantic
         Sequent.Bpmn.Graph
         Sequent.Bpmn.Validate
+        Sequent.Bpmn.Read
         Sequent.Camunda.Model
         Sequent.Camunda.Validate
         Sequent.Camunda.Xml
+        Sequent.Camunda.XmlParse
         Sequent.Camunda.Serialize
         Sequent.Layout
         Sequent.Layout.Constants
@@ -109,6 +112,7 @@ test-suite spec
         Sequent.DeterminismSpec
         Sequent.LayoutInvariantSpec
         Sequent.SpecRuleSpec
+        Sequent.ImportSpec
         Sequent.GoldenSpec
         Sequent.PerformanceSpec
     build-depends:

@@ -3,6 +3,7 @@ module Main (main) where
 import Test.Hspec
 
 import qualified Sequent.DeterminismSpec
+import qualified Sequent.ImportSpec
 import qualified Sequent.GoldenSpec
 import qualified Sequent.IdSpec
 import qualified Sequent.LayoutInvariantSpec
@@ -27,5 +28,6 @@ main = hspec $ do
   describe "layout invariants" Sequent.LayoutInvariantSpec.spec
   describe "SPEC rules" Sequent.SpecRuleSpec.spec
   describe "determinism" Sequent.DeterminismSpec.spec
+  describe "import" Sequent.ImportSpec.spec
   describe "golden" Sequent.GoldenSpec.spec
   describe "performance" Sequent.PerformanceSpec.spec
