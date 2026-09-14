@@ -63,6 +63,21 @@ spec = do
           td = head (descendantsNamed "zeebe:taskDefinition" node)
       (attr "type" td, attr "retries" td) `shouldBe` (Just "job", Just "4")
 
+    it "emits a job on a message end event, before its event definition" $ do
+      -- Camunda 8 runs a throwing message event as a job, so the event carries
+      -- a task definition. The BPMN sequence model for tThrowEvent puts
+      -- extensionElements before eventDefinition, and a validating reader
+      -- rejects the other order.
+      let node =
+            byId
+              "Event_done"
+              "message m \"wire\"\nprocess p { start s\ntask a\nend done \"Done\" { message m\ntype \"publish\" } }"
+          td = descendantsNamed "zeebe:taskDefinition" node
+       in ( map (attr "type") td
+          , [n | n <- map xmlName (xmlChildren node), n `elem` ["bpmn:extensionElements", "bpmn:messageEventDefinition"]]
+          )
+            `shouldBe` ([Just "publish"], ["bpmn:extensionElements", "bpmn:messageEventDefinition"])
+
     it "emits a user task with its form and assignment" $ do
       let node = byId "Activity_u" "start s\nuser u { form \"f\" groups \"sales\" }\nend e"
       map xmlName (descendantsNamed "zeebe:formDefinition" node ++ descendantsNamed "zeebe:assignmentDefinition" node)

@@ -957,9 +957,15 @@ firstOf [] = Nothing
 allowedProps :: NodeKw -> [Text]
 allowedProps k = case k of
   KwStart -> ["message", "timer", "signal", "link", "escalation", "doc"]
-  KwEnd -> ["message", "signal", "error", "escalation", "link", "terminate", "compensation", "doc"]
+  -- Camunda 8 implements a /throwing/ message event as a job: the broker
+  -- creates one and a worker publishes the message. So an end or throw step
+  -- carrying a message takes the job metadata a service task takes, and a
+  -- deployment without it is rejected. Which events may actually use it is a
+  -- Camunda rule rather than a syntactic one, and lives in
+  -- "Sequent.Camunda.Validate".
+  KwEnd -> ["message", "signal", "error", "escalation", "link", "terminate", "compensation", "type", "retries", "input", "output", "header", "doc"]
   KwWait -> ["message", "timer", "signal", "link", "escalation", "doc"]
-  KwThrow -> ["message", "signal", "escalation", "link", "compensation", "doc"]
+  KwThrow -> ["message", "signal", "escalation", "link", "compensation", "type", "retries", "input", "output", "header", "doc"]
   KwService -> ["type", "retries", "input", "output", "header", "each", "collect", "doc"]
   KwUser -> ["form", "assignee", "groups", "users", "due", "input", "output", "each", "collect", "doc"]
   KwScript -> ["expression", "result", "input", "output", "each", "collect", "doc"]
@@ -1094,7 +1100,14 @@ nodeKind roots n kw props = case kw of
 
     eventOf flavour = do
       d <- eventDefinition roots n props
-      pure (NkEvent (EventSpec flavour d), noExecution)
+      ex <-
+        if any isType props
+          then ExService <$> serviceTask
+          else pure noExecution
+      pure (NkEvent (EventSpec flavour d), ex)
+
+    isType (SProp _ (PType _)) = True
+    isType _ = False
 
 -- | An event carries at most one definition. Which keywords are legal on which
 -- event is settled by 'allowedProps'; this only turns the survivor into a

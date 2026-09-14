@@ -174,6 +174,32 @@ spec = do
       messagesOf (errorsOf' "start s\ntask t\nend e\non t catch timer \"15m\" as late { end l }")
         `shouldSatisfy` any (isInfixOf "malformed timer")
 
+    it "gives a throwing message event the job Camunda runs it as" $
+      -- Camunda 8 implements a message throw or end event as a job: the broker
+      -- creates one and a worker publishes the message. So the event carries
+      -- the same task definition a service task does.
+      execOfNode "Event_done" "message m \"wire\"\nprocess p { start s\ntask a\nend done \"Done\" { message m\ntype \"publish\" retries 3 header k = \"v\" } }"
+        `shouldBe` Just
+          ( ExService
+              ZeebeTask
+                { ztType = "publish"
+                , ztRetries = Just 3
+                , ztInputs = []
+                , ztOutputs = []
+                , ztHeaders = [Header "k" "v"]
+                }
+          )
+
+    it "warns when a thrown message has no job type" $
+      -- Valid BPMN, undeployable process: Zeebe rejects it with "must have
+      -- exactly one 'zeebe:taskDefinition' extension element".
+      messagesOf (diagsOf "message m \"wire\"\nprocess p { start s\ntask a\nend done \"Done\" { message m } }")
+        `shouldSatisfy` any (isInfixOf "throws a message but has no job type")
+
+    it "rejects a job type on an event that throws nothing" $
+      messagesOf (errorsOf' "start s\ntask a\nend done \"Done\" { type \"nope\" }")
+        `shouldSatisfy` any (isInfixOf "does not throw a message")
+
   describe "the result" $ do
     it "emits no BPMN when anything is an error" $
       crXml (compileOk "end e") `shouldSatisfy` isNothing
@@ -211,5 +237,10 @@ lanesOf src = case sgProcesses (graphOf src) of
 
 execOf :: Text -> Maybe ExecutionMeta
 execOf src = case [fnExec n | n <- nodesOf src, nodeIsActivity n] of
+  (e : _) -> Just e
+  [] -> Nothing
+
+execOfNode :: Text -> Text -> Maybe ExecutionMeta
+execOfNode i src = case [fnExec n | n <- nodesOf src, unNodeId (fnId n) == i] of
   (e : _) -> Just e
   [] -> Nothing
