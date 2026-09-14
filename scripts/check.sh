@@ -49,6 +49,29 @@ first=$(cabal run -v0 sequent -- build examples/order.sq -o "$out/d1.bpmn" >/dev
 second=$(cabal run -v0 sequent -- build examples/order.sq -o "$out/d2.bpmn" >/dev/null; sha256sum < "$out/d2.bpmn")
 if [ "$first" = "$second" ]; then note "ok (byte-identical)"; else note "FAILED: repeated compilation differed"; fail=1; fi
 
+step "round trip"
+# Import every golden back to source and recompile it. The importer checks its
+# own work, so a clean exit is the assertion; what this adds is that the BPMN
+# the recompiled source produces carries the same elements, which is the claim
+# a reader actually cares about.
+for golden in examples/*.bpmn; do
+  name=$(basename "$golden" .bpmn)
+  if ! cabal run -v0 sequent -- import "$golden" -o "$out/$name.sq" >/dev/null 2>"$out/$name.err"; then
+    note "$golden: import FAILED"
+    sed 's/^/    /' "$out/$name.err"
+    fail=1
+    continue
+  fi
+  if ! cabal run -v0 sequent -- build "$out/$name.sq" -o "$out/$name.bpmn" >/dev/null 2>&1; then
+    note "$golden: the imported source does not compile"
+    fail=1
+    continue
+  fi
+  a=$(grep -oE '<bpmn:[a-zA-Z]+ [^>]*' "$golden" | sort | sha256sum)
+  b=$(grep -oE '<bpmn:[a-zA-Z]+ [^>]*' "$out/$name.bpmn" | sort | sha256sum)
+  if [ "$a" = "$b" ]; then note "$golden: ok"; else note "$golden: round trip changed the process"; fail=1; fi
+done
+
 printf '\n'
 if [ "$fail" -eq 0 ]; then echo "check: PASS"; else echo "check: FAIL"; fi
 exit "$fail"
