@@ -28,16 +28,26 @@ module Sequent.Compiler
   , compileGraph
   , formatText
   , checkText
+  , ImportResult (..)
+  , importText
   , succeeded
   ) where
 
 import Data.Text (Text)
+import Data.List (sortOn)
+import qualified Data.Text as T
 
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
+
+import Sequent.Bpmn.Id (allocationClasses, classPrefix)
+import Sequent.Bpmn.Read (ReadResult (..), readBpmn)
 import Sequent.Bpmn.Semantic
 import qualified Sequent.Bpmn.Validate as BpmnValidate
 import qualified Sequent.Camunda.Serialize as Serialize
 import qualified Sequent.Camunda.Validate as CamundaValidate
 import Sequent.Diagnostic
+import Sequent.Language.Emit (EmitResult (..), emitFile)
 import Sequent.Language.Parser (parseFile)
 import qualified Sequent.Language.Pretty as Pretty
 import Sequent.Language.Resolve
@@ -142,6 +152,232 @@ compileGraph opts pins g0 =
     gate vs
       | coStrictLayout opts = vs
       | otherwise = [v {vTier = max T2 (vTier v)} | v <- vs]
+
+-- The other direction ----------------------------------------------------------
+
+data ImportResult = ImportResult
+  { irSource      :: Maybe Text
+  -- ^ The @.sq@ source, in canonical form. Absent only when the BPMN could not
+  -- be read at all.
+  , irGraph       :: Maybe SemanticGraph
+  , irDiagnostics :: [Diagnostic]
+  }
+
+-- | BPMN → @.sq@.
+--
+-- Read the file into a semantic graph, emit the surface syntax that produces
+-- that graph, and print it with the same formatter every other @.sq@ goes
+-- through. Geometry is discarded on the way in: the point of the round trip is
+-- that the layout engine computes it again, so a file that came from a
+-- modeller comes back laid out by the rules in @SPEC.md@ rather than by hand.
+--
+-- __The import checks its own work.__ Emitting surface syntax means re-deriving
+-- structure the language leaves implicit — consecutive steps chain, gateways
+-- nest, merges are derived — and the failure mode is an edge the language
+-- /invents/, not one it drops. So the result is compiled back to a semantic
+-- graph and compared with the one that was read, element by element. A
+-- mismatch is reported as an error with the difference named, because a
+-- silently wrong import is worse than a refused one.
+importText :: FilePath -> Text -> ImportResult
+importText path src = case rdGraph raw of
+  Nothing -> ImportResult Nothing Nothing (sortDiagnostics (rdDiagnostics raw))
+  Just g ->
+    let out = emitFile g
+        text = Pretty.format (emFile out)
+     in ImportResult
+          (Just text)
+          (Just g)
+          (sortDiagnostics (rdDiagnostics raw ++ emDiagnostics out ++ verify path (emSymbols out) g text))
+  where
+    raw = readBpmn path src
+
+-- | Compile the emitted source and compare the graph it produces with the one
+-- that was imported.
+--
+-- Document order is normalised away first. It is a real part of the graph — the
+-- canonical ordering key ends in it — but its /absolute/ values are an artefact
+-- of how many elements a parser happened to count past, and the emitted file
+-- counts differently from the XML. What has to match is the order after
+-- canonicalisation, which is what comparing the ranks checks.
+verify :: FilePath -> Map Text Text -> SemanticGraph -> Text -> [Diagnostic]
+verify path syms original text = case parseFile path text of
+  Left ds -> map reframe ds
+  Right ast -> case rrGraph (resolveFile ast) of
+    Nothing -> map reframe (rrDiags (resolveFile ast))
+    Just g'
+      | before == after -> []
+      | otherwise -> [mismatch (difference before after)]
+      where
+        before = normalise (relabel (\i -> Map.findWithDefault i i syms) original)
+        after = normalise (relabel stripClassPrefix g')
+  where
+    reframe d =
+      d
+        { diagMessage = "the imported source does not compile: " <> diagMessage d
+        , diagSeverity = Error
+        }
+    mismatch what =
+      withHint
+        "this is a defect in the importer, not in the file: please report it with the input"
+        ( diagnostic
+            Error
+            InternalCompilerError
+            ("the imported source does not reproduce the original process (" <> what <> ")")
+        )
+
+-- | Compare on symbolic names, not on ids.
+--
+-- An id survives the round trip only when it /is/ a name — @Activity_charge@
+-- becomes @charge@ and comes back as @Activity_charge@. A file written in a
+-- modeller has ids like @Activity_1x9k2df@, and the language has no syntax for
+-- \"this step's id is that string\", so those change by construction. What must
+-- not change is everything else, and rewriting both sides to the names the
+-- import chose is what lets the check say so.
+--
+-- Flow ids go further: the resolver derives them from their endpoints, so they
+-- cannot match either. Their identity is the pair they connect, which is what
+-- they are keyed and sorted on here.
+stripClassPrefix :: Text -> Text
+stripClassPrefix i = case [r | c <- allocationClasses, Just r <- [T.stripPrefix (classPrefix c) i]] of
+  (r : _) -> r
+  [] -> i
+
+relabel :: (Text -> Text) -> SemanticGraph -> SemanticGraph
+relabel f g =
+  g
+    { sgMessages = [m {msgId = node (msgId m)} | m <- sgMessages g]
+    , sgSignals = [x {sigId = node (sigId x)} | x <- sgSignals g]
+    , sgErrors = [x {errId = node (errId x)} | x <- sgErrors g]
+    , sgEscalations = [x {escId = node (escId x)} | x <- sgEscalations g]
+    , sgCollaboration = col <$> sgCollaboration g
+    , sgProcesses = map proc' (sgProcesses g)
+    }
+  where
+    node (NodeId i) = NodeId (f i)
+    flow (FlowId i) = FlowId (f i)
+    lane (LaneId i) = LaneId (f i)
+    art (ArtifactId i) = ArtifactId (f i)
+    part (ParticipantId i) = ParticipantId (f i)
+    ref r = case r of
+      RefNode i -> RefNode (node i)
+      RefFlow i -> RefFlow (flow i)
+      RefLane i -> RefLane (lane i)
+      RefParticipant i -> RefParticipant (part i)
+      RefArtifact i -> RefArtifact (art i)
+
+    col c =
+      c
+        { colId = f (colId c)
+        , colParticipants = [p {partId = part (partId p), partProcess = ProcessId . f . unProcessId <$> partProcess p} | p <- colParticipants c]
+        , colMessageFlows =
+            [ m {mfId = flow (mfId m), mfSource = ref (mfSource m), mfTarget = ref (mfTarget m), mfMessage = node <$> mfMessage m}
+            | m <- colMessageFlows c
+            ]
+        }
+
+    proc' p =
+      p
+        { procId = ProcessId (f (unProcessId (procId p)))
+        , procLanes = [l {laneId = lane (laneId l), laneChildren = map lane (laneChildren l)} | l <- procLanes p]
+        , procScope = scope (procScope p)
+        }
+
+    scope sc =
+      sc
+        { scId = case scId sc of
+            ScopeProcess i -> ScopeProcess (ProcessId (f (unProcessId i)))
+            ScopeSubprocess i -> ScopeSubprocess (node i)
+        , scNodes = map fnode (scNodes sc)
+        , scFlows =
+            [ x {sfId = flow (sfId x), sfSource = node (sfSource x), sfTarget = node (sfTarget x)}
+            | x <- scFlows sc
+            ]
+        , scArtifacts = [a {artId = art (artId a), artLane = lane <$> artLane a} | a <- scArtifacts sc]
+        , scAssociations = [a {asId = flow (asId a), asSource = ref (asSource a), asTarget = ref (asTarget a)} | a <- scAssociations sc]
+        }
+
+    fnode n = n {fnId = node (fnId n), fnLane = lane <$> fnLane n, fnKind = kind (fnKind n)}
+    kind k = case k of
+      NkEvent (EventSpec fl d) -> NkEvent (EventSpec (flav fl) (def <$> d))
+      NkActivity (Activity (AkSubprocess inner) l) -> NkActivity (Activity (AkSubprocess (scope inner)) l)
+      NkActivity (Activity (AkTask (TtReceive m)) l) -> NkActivity (Activity (AkTask (TtReceive (node <$> m))) l)
+      other -> other
+    flav fl = case fl of
+      EvBoundary att -> EvBoundary att {baHost = node (baHost att)}
+      other -> other
+    def d = case d of
+      EdMessage i -> EdMessage (node i)
+      EdSignal i -> EdSignal (node i)
+      EdError i -> EdError (node <$> i)
+      EdEscalation i -> EdEscalation (node <$> i)
+      other -> other
+
+-- | Rewrite every document-order counter to zero and sort by identity.
+--
+-- Document order is a real part of the graph — the canonical ordering key ends
+-- in it — but its values are a property of how a file was /written/, not of the
+-- process. The emitted source legitimately reorders: a boundary handler moves
+-- next to the step it hangs on, which is the idiomatic form and not the order
+-- the XML happened to use.
+normalise :: SemanticGraph -> SemanticGraph
+normalise g0 = g {sgProcesses = map proc' (sgProcesses g), sgCollaboration = col}
+  where
+    g = canonicalise g0
+    col = (\c -> c {colMessageFlows = [m {mfDocOrder = 0, mfId = FlowId ""} | m <- sortOn (\x -> (refKey (mfSource x), refKey (mfTarget x))) (colMessageFlows c)]}) <$> sgCollaboration g
+    refKey r = case r of
+      RefNode i -> unNodeId i
+      RefParticipant i -> unParticipantId i
+      RefArtifact i -> unArtifactId i
+      RefFlow i -> unFlowId i
+      RefLane i -> unLaneId i
+    proc' p = p {procScope = scope (procScope p)}
+    scope sc =
+      sc
+        { scNodes = [(n {fnDocOrder = 0}) {fnKind = kind (fnKind n)} | n <- sortOn fnId (scNodes sc)]
+        , scFlows = [f {sfDocOrder = 0, sfId = FlowId ""} | f <- sortOn (\x -> (sfSource x, sfTarget x)) (scFlows sc)]
+        , scArtifacts = [a {artDocOrder = 0} | a <- sortOn artId (scArtifacts sc)]
+        , scAssociations = [a {asDocOrder = 0, asId = FlowId ""} | a <- sortOn (\x -> (show (asSource x), show (asTarget x))) (scAssociations sc)]
+        }
+    kind (NkActivity (Activity (AkSubprocess inner) l)) = NkActivity (Activity (AkSubprocess (scope inner)) l)
+    kind other = other
+
+-- | The first concrete thing that differs, so the report names something the
+-- reader can look at rather than "graphs differ".
+difference :: SemanticGraph -> SemanticGraph -> Text
+difference a b =
+  headOr "no difference found" $
+    [ "processes: " <> tshow (map (unProcessId . procId) (sgProcesses a))
+        <> " became " <> tshow (map (unProcessId . procId) (sgProcesses b))
+    | map procId (sgProcesses a) /= map procId (sgProcesses b)
+    ]
+      ++ concat (zipWith scopeDiff (map procScope (sgProcesses a)) (map procScope (sgProcesses b)))
+      ++ ["declarations differ" | (sgMessages a, sgSignals a, sgErrors a, sgEscalations a) /= (sgMessages b, sgSignals b, sgErrors b, sgEscalations b)]
+      ++ ["the collaboration differs" | sgCollaboration a /= sgCollaboration b]
+  where
+    scopeDiff x y =
+      [ "nodes: " <> tshow (map (unNodeId . fnId) (scNodes x)) <> " became " <> tshow (map (unNodeId . fnId) (scNodes y))
+      | map fnId (scNodes x) /= map fnId (scNodes y)
+      ]
+        ++ [ "connections: " <> tshow (edges x) <> " became " <> tshow (edges y)
+           | edges x /= edges y
+           ]
+        ++ [ "step '" <> unNodeId (fnId n) <> "' changed"
+           | (n, m) <- zip (scNodes x) (scNodes y)
+           , n /= m
+           ]
+        ++ [ "the connection " <> tshow (unNodeId (sfSource f), unNodeId (sfTarget f)) <> " changed"
+           | (f, h) <- zip (scFlows x) (scFlows y)
+           , f /= h
+           ]
+        ++ ["artifacts differ" | scArtifacts x /= scArtifacts y]
+        ++ ["associations differ" | scAssociations x /= scAssociations y]
+    edges sc = [(unNodeId (sfSource f), unNodeId (sfTarget f)) | f <- scFlows sc]
+    headOr d xs = case xs of
+      (x : _) -> x
+      [] -> d
+
+tshow :: Show a => a -> Text
+tshow = T.pack . show
 
 -- | Parse and re-print in canonical form.
 formatText :: FilePath -> Text -> Either [Diagnostic] Text
