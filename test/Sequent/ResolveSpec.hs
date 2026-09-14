@@ -200,6 +200,24 @@ spec = do
       messagesOf (errorsOf' "start s\ntask a\nend done \"Done\" { type \"nope\" }")
         `shouldSatisfy` any (isInfixOf "does not throw a message")
 
+    it "lets a script task be implemented by a job worker" $
+      -- Camunda 8 runs a script task either in the broker, from a FEEL
+      -- expression, or on a worker, from a task definition. The second form is
+      -- the one a modeller gets by picking \"job worker\" in the properties
+      -- panel, and a language that only had the first could not read it back.
+      execOfNode "Activity_t" "start s\nscript t { type \"js\" retries 2 }\nend e"
+        `shouldBe` Just (ExService (emptyZeebeTask "js") {ztRetries = Just 2})
+
+    it "lets a business-rule task be implemented by a job worker" $
+      execOfNode "Activity_t" "start s\nbusiness t { type \"rules\" }\nend e"
+        `shouldBe` Just (ExService (emptyZeebeTask "rules"))
+
+    it "rejects a step that names both implementations" $
+      -- Only one of them reaches the XML, so accepting both would make the
+      -- source say something the output does not.
+      messagesOf (errorsOf' "start s\nscript t { expression \"=1\" type \"js\" }\nend e")
+        `shouldSatisfy` any (isInfixOf "implemented by 'expression' or by 'type', not both")
+
   describe "the result" $ do
     it "emits no BPMN when anything is an error" $
       crXml (compileOk "end e") `shouldSatisfy` isNothing

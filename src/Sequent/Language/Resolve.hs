@@ -968,8 +968,13 @@ allowedProps k = case k of
   KwThrow -> ["message", "signal", "escalation", "link", "compensation", "type", "retries", "input", "output", "header", "doc"]
   KwService -> ["type", "retries", "input", "output", "header", "each", "collect", "doc"]
   KwUser -> ["form", "assignee", "groups", "users", "due", "input", "output", "each", "collect", "doc"]
-  KwScript -> ["expression", "result", "input", "output", "each", "collect", "doc"]
-  KwBusiness -> ["decision", "result", "input", "output", "each", "collect", "doc"]
+  -- Camunda 8 lets a script or a business-rule task be implemented either by
+  -- the broker (a FEEL expression, a DMN decision) or by a job worker, and the
+  -- second form is an ordinary @zeebe:taskDefinition@. Both spellings are
+  -- accepted here; 'nodeKind' rejects a step that gives both, because only one
+  -- of them would reach the XML.
+  KwScript -> ["expression", "result", "type", "retries", "input", "output", "header", "each", "collect", "doc"]
+  KwBusiness -> ["decision", "result", "type", "retries", "input", "output", "header", "each", "collect", "doc"]
   KwSend -> ["type", "retries", "input", "output", "header", "each", "collect", "doc"]
   KwReceive -> ["message", "each", "collect", "doc"]
   KwCall -> ["calls", "propagate", "input", "output", "each", "collect", "doc"]
@@ -1023,23 +1028,33 @@ nodeKind roots n kw props = case kw of
             }
       )
   KwScript -> case firstOf [(sp, v) | SProp sp (PExpression v) <- props] of
-    Nothing -> do
-      needs "expression" "expression \"=total * 0.2\""
-      pure (NkActivity (Activity (AkTask TtScript) loop), noExecution)
-    Just (_, e) ->
+    Just (_, e) -> do
+      onlyOne "expression"
       pure
         ( NkActivity (Activity (AkTask TtScript) loop)
         , ExScript (ScriptSpec (feel e) (fromMaybe "result" (firstOf [v | SProp _ (PResult v) <- props])) inputs outputs)
         )
+    Nothing
+      | any isType props -> do
+          z <- serviceTask
+          pure (NkActivity (Activity (AkTask TtScript) loop), ExService z)
+      | otherwise -> do
+          needs "expression" "expression \"=total * 0.2\" (or 'type' for a job worker)"
+          pure (NkActivity (Activity (AkTask TtScript) loop), noExecution)
   KwBusiness -> case firstOf [(sp, v) | SProp sp (PDecision v) <- props] of
-    Nothing -> do
-      needs "decision" "decision \"credit-scoring\""
-      pure (NkActivity (Activity (AkTask TtBusinessRule) loop), noExecution)
-    Just (_, d) ->
+    Just (_, d) -> do
+      onlyOne "decision"
       pure
         ( NkActivity (Activity (AkTask TtBusinessRule) loop)
         , ExDecision (DecisionSpec d (fromMaybe "result" (firstOf [v | SProp _ (PResult v) <- props])) inputs outputs)
         )
+    Nothing
+      | any isType props -> do
+          z <- serviceTask
+          pure (NkActivity (Activity (AkTask TtBusinessRule) loop), ExService z)
+      | otherwise -> do
+          needs "decision" "decision \"credit-scoring\" (or 'type' for a job worker)"
+          pure (NkActivity (Activity (AkTask TtBusinessRule) loop), noExecution)
   KwCall -> case firstOf [(sp, v) | SProp sp (PCalls v) <- props] of
     Nothing -> do
       needs "calls" "calls \"shipping-process\""
@@ -1068,6 +1083,17 @@ nodeKind roots n kw props = case kw of
         (locSpan (snName n))
         ("a " <> nodeKeyword kw <> " step needs a '" <> what <> "' property")
         ("add it inside the block: " <> example)
+
+    -- A step that names both implementations would serialise as one of them,
+    -- and the reader of the source would have no way to tell which.
+    onlyOne other = case firstOf [sp | SProp sp (PType _) <- props] of
+      Nothing -> pure ()
+      Just sp ->
+        failHint
+          SemanticError
+          sp
+          ("a " <> nodeKeyword kw <> " step is implemented by '" <> other <> "' or by 'type', not both")
+          ("drop one: '" <> other <> "' runs in the broker, 'type' hands the work to a job worker")
 
     inputs = [Mapping t (feel src) | SProp _ (PInput t src) <- props]
     outputs = [Mapping t (feel src) | SProp _ (POutput t src) <- props]
