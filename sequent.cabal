@@ -9,7 +9,9 @@ description:
   deterministic ids, deterministic XML and a layout derived from the normative
   layout specification in SPEC.md.
 
-license:            BSD-3-Clause
+license:            Apache-2.0
+license-file:       LICENSE
+copyright:          Copyright 2026 Pedro
 author:             Pedro
 maintainer:         pedro.coding.contact@gmail.com
 category:           Language
@@ -25,6 +27,10 @@ extra-source-files:
     docs/current-status.md
     docs/spec-compliance.md
     docs/migration.md
+
+source-repository head
+    type:     git
+    location: https://github.com/pedro-git-projects/sequent.git
 
 common lang
     ghc-options:        -Wall -Wcompat -Wincomplete-record-updates
