@@ -23,6 +23,7 @@ data Command
   | Check FilePath
   | Fmt FilePath Bool
   | Report FilePath
+  | Import FilePath (Maybe FilePath)
   | Rules
 
 main :: IO ()
@@ -47,6 +48,7 @@ commands =
         <> command "check" (info checkCmd (progDesc "report diagnostics without writing output"))
         <> command "fmt" (info fmtCmd (progDesc "print the file in canonical form"))
         <> command "report" (info reportCmd (progDesc "print the layout quality report"))
+        <> command "import" (info importCmd (progDesc "read a .bpmn file and write the .sq that produces it"))
         <> command "rules" (info (pure Rules) (progDesc "list the implemented specification rules"))
     )
   where
@@ -66,6 +68,17 @@ commands =
     checkCmd = Check <$> sourceArg
     fmtCmd = Fmt <$> sourceArg <*> switch (long "write" <> short 'w' <> help "rewrite the file in place")
     reportCmd = Report <$> sourceArg
+    importCmd =
+      Import
+        <$> strArgument (metavar "FILE" <> help "a .bpmn file")
+        <*> optional
+          ( strOption
+              ( long "output"
+                  <> short 'o'
+                  <> metavar "FILE"
+                  <> help "where to write the source (default: stdout)"
+              )
+          )
     sourceArg = strArgument (metavar "FILE" <> help "a .sq source file")
 
 run :: Command -> IO ()
@@ -92,6 +105,19 @@ run cmd = case cmd of
     case formatText src text of
       Left ds -> report src text ds >> exitFailure
       Right out -> if write then TIO.writeFile src out else TIO.putStr out
+  Import src out -> do
+    text <- TIO.readFile src
+    let res = importText src text
+    report src text (irDiagnostics res)
+    case irSource res of
+      Nothing -> exitFailure
+      Just sq -> do
+        case out of
+          Nothing -> TIO.putStr sq
+          Just dest -> do
+            TIO.writeFile dest sq
+            putStrLn (src <> " -> " <> dest)
+        when (hasErrors (irDiagnostics res)) exitFailure
   Report src -> do
     text <- TIO.readFile src
     let res = compileText (defaultOptions {coStrictLayout = False}) src text
