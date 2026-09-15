@@ -10,6 +10,8 @@ Ultimately BPMN files are XMLs documentas that encode, among other things, the g
 
 The resulting language, which I called sequent, uses .sq as its file extension. Once geometry is removed from the source, however, a new problem emerges: how should a compiler recover a deterministic and human-acceptable BPMN layout from purely semantic input? The main challenge was therefore to derive a consistent set of layout rules which, when applied to a source term, always produce a readable BPMN diagram. These rules make the rendering canonical in the relevant sense: the same source file always induces the same workflow layout.
 
+The direction runs both ways: `sequent import` reads a `.bpmn` back into `.sq`, so an existing model can be brought under this discipline without being retyped.
+
 The target is **Camunda 8 (Zeebe)**. The output carries the Zeebe namespace, `modeler:executionPlatform="Camunda Cloud"`, and the `zeebe:` extension elements for job types, I/O mappings, task headers, user tasks, forms, called decisions, called elements and multi-instance loops.
 
 [`SPEC.md`](SPEC.md) is the normative layout specification for the rendering implements, and [`docs/spec-compliance.md`](docs/spec-compliance.md) says, rule by rule, where each one lives and which test covers it.
@@ -72,11 +74,35 @@ is [`examples/order.sq`](examples/order.sq).
 ## Other commands
 
 ```bash
-cabal run sequent -- check  in.sq        # diagnostics only, no output written
-cabal run sequent -- fmt    in.sq [-w]   # canonical form, comments and all
-cabal run sequent -- report in.sq        # layout score and rule violations
-cabal run sequent -- rules               # the implemented layout rules
+cabal run sequent -- check  in.sq            # diagnostics only, no output written
+cabal run sequent -- fmt    in.sq [-w]       # canonical form, comments and all
+cabal run sequent -- report in.sq            # layout score and rule violations
+cabal run sequent -- import in.bpmn [-o f]   # BPMN back to .sq
+cabal run sequent -- rules                   # the implemented layout rules
 ```
+
+## The other direction
+
+`import` reads a `.bpmn` and writes the `.sq` that produces it, so a process
+drawn in Modeler — or emitted by somebody else's tool — can be brought under
+version control and edited as text from then on.
+
+```bash
+cabal run sequent -- import drawn-by-hand.bpmn -o process.sq
+```
+
+Geometry is discarded on the way in and computed again on the way out, which is
+the point: what comes back is the same process laid out by the rules rather than
+by hand. Element ids survive when they are names — `Activity_charge` becomes
+`charge` and compiles back to `Activity_charge` — and are regenerated from the
+labels when they are not, which is the case for a file a modeller wrote. The
+process id, the message names and every correlation key are kept either way.
+
+The import **checks its own work**: the source it produces is compiled back to a
+process and compared with the one that was read. A mismatch is an error naming
+the difference, not a file you have to diff yourself. A construct the language
+cannot express — an event subprocess, a transaction, nested lanes, a data store,
+a BPMN group — is reported by id rather than dropped quietly.
 
 Diagnostics carry a category, a span and a caret:
 
@@ -103,7 +129,7 @@ error[layout/HC-004]: connector passes through Activity_a (Flow_s_c)
 cabal test                # the test suite alone
 ```
 
-Current result: **709 examples, 0 failures**.
+Current result: **758 examples, 0 failures**.
 
 The suite is a single hspec executable. Filter it with `--match`, which takes a
 substring of the `describe`/`it` path:
@@ -131,6 +157,7 @@ afterwards; that is the point of having them.
 | [`docs/design.md`](docs/design.md) | the feature list, the design decisions and their costs, and what Haskell contributed |
 | [`docs/current-status.md`](docs/current-status.md) | what has actually been verified, and what has not |
 | [`docs/spec-compliance.md`](docs/spec-compliance.md) | rule => implementation => test, for every rule in `SPEC.md` |
+| [`docs/import.md`](docs/import.md) | the reverse direction: reading `.bpmn` back into `.sq` |
 | [`docs/migration.md`](docs/migration.md) | moving from the previous `.sequent` language |
 | [`SPEC.md`](SPEC.md) | the normative layout specification |
 
@@ -139,7 +166,11 @@ afterwards; that is the point of having them.
 ```
 Source file => Surface AST => Semantic graph => Logical layout structure
             => Rendered geometry => Camunda 8 BPMN
+
+Camunda 8 BPMN => Semantic graph => Surface AST => Source file
 ```
+
+Import is the same road walked backwards, and it stops one representation short of the start: it rebuilds the semantic graph, writes a surface AST from it, and formats that. It never touches the layout structure or the geometry, because those are exactly the things it is throwing away.
 
 Those four representations are kept apart on purpose. The main idea is: the semantic graphic is exactly what it sounds like, it holds BPMN *meanings* but no coordinates. The logical layout structure holds regions, layers, bands and ports but no pixels. The rendered geometry, in its turn holds integer pixels but no xml. [`docs/architecture.md`](docs/architecture.md) explains what each boundary
 buys, stage by stage, with the type and module that carries it.
@@ -154,17 +185,21 @@ Camunda: `zeebe:taskDefinition`, `zeebe:ioMapping`, `zeebe:taskHeaders`,
 `zeebe:taskSchedule`, `zeebe:script`, `zeebe:calledDecision`,
 `zeebe:calledElement`, `zeebe:loopCharacteristics`, `zeebe:subscription`.
 
-**TODO**: nested lanes, data stores, BPMN groups, event subprocesses, transaction subprocesses, collapsed subprocesses, compensation activities, and reading `.bpmn` back. The [feature matrix](docs/language.md#feature-matrix) is the exhaustive list, cell by cell.
+**TODO**: nested lanes, data stores, BPMN groups, event subprocesses, transaction subprocesses, collapsed subprocesses and compensation activities. The importer reads a file containing any of them and reports each one by id rather than dropping it quietly. The [feature matrix](docs/language.md#feature-matrix) is the exhaustive list, cell by cell.
 
 ## Verification
 
 ```bash
 cabal build all      # -Wall clean, zero warnings
-cabal test           # 709 examples, 0 failures
-./scripts/check.sh   # the above, plus every example against its golden
+cabal test           # 758 examples, 0 failures
+./scripts/check.sh   # the above, plus every example against its golden,
+                     # plus a .bpmn -> .sq -> .bpmn round trip of each one
 ```
 
-The tests cover the parser and resolver behaviors with source positions, formatter idempotence, the id policy, deterministic text mectrics, BPMN structure and schema child ordering, asserted by re-parsing the generated XML rather then by string matching. Hard-constrait invariants over a corpus of nineteen process shapes. A rule-by-rule suite named after `SPEC.md` rules it checks. The canonical examples of `SPEC.md §L` as golden tests; byte-exact goldens for every example; determinism under eight shuffles of every input collection; and scale tests at 10, 50, 150 and 500 nodes.
+The tests cover the parser and resolver behaviors with source positions, formatter idempotence, the id policy, deterministic text mectrics, BPMN structure and schema child ordering, asserted by re-parsing the generated XML rather then by string matching. Hard-constrait invariants over a corpus of nineteen process shapes. A rule-by-rule suite named after `SPEC.md` rules it checks. The canonical examples of `SPEC.md §L` as golden tests; byte-exact goldens for every example; determinism under eight shuffles of every input collection; and scale tests at 10, 50, 150 and 500 nodes. The import direction is covered
+both from inside — it compiles its own output and compares the graphs before
+returning — and from outside, by importing every golden and asserting the
+recompiled process is unchanged.
  
 Source to BPMN bytes, `-O1`, one core:
 
@@ -176,3 +211,7 @@ Source to BPMN bytes, `-O1`, one core:
 | 500 | 170 ms |
 
 **The only acceptance test that matters, however, cannot be automated.** A human being must open the resulting BPMN in modeler and be happy with how it looks. Nothing in this repository has been through Modeler. 
+
+## License
+
+sequent is distributed under the [Apache License, Version 2.0](LICENSE).
