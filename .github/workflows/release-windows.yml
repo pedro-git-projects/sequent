@@ -1,0 +1,125 @@
+name: release-windows
+
+# Builds the portable Windows x86-64 pre-alpha distribution.
+#
+# Runs on every push of a v* tag, and on demand. The job produces the ZIP and
+# its SHA-256 checksum as workflow artifacts; when it was triggered by a tag it
+# also attaches them to the GitHub release for that tag.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      prerelease:
+        description: 'Pre-release qualifier appended to the sequent.cabal version'
+        required: false
+        default: 'alpha.1'
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up GHC and Cabal
+        id: setup
+        uses: haskell-actions/setup@v2
+        with:
+          ghc-version: '9.8.4'
+          cabal-version: 'latest'
+
+      - name: Cache the Cabal store
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ steps.setup.outputs.cabal-store }}
+            dist-newstyle
+          key: ${{ runner.os }}-ghc9.8.4-${{ hashFiles('sequent.cabal', 'cabal.project') }}
+          restore-keys: ${{ runner.os }}-ghc9.8.4-
+
+      - name: Run the test suite
+        run: cabal test all
+
+      - name: Package the portable distribution
+        run: |
+          $pre = '${{ github.event.inputs.prerelease }}'
+          if ([string]::IsNullOrWhiteSpace($pre)) { $pre = 'alpha.1' }
+          .\scripts\package-windows.ps1 -PreRelease $pre
+
+      # The packaging script smoke-tests the staging directory. This repeats the
+      # test against a fresh extraction of the ZIP itself, in a directory with no
+      # relationship to the checkout, which is what a user actually gets.
+      - name: Smoke-test the extracted ZIP
+        run: |
+          $zip = Get-ChildItem dist\releases\*.zip | Select-Object -First 1
+          $dest = Join-Path $env:RUNNER_TEMP 'extracted'
+          Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue
+          Expand-Archive -Path $zip.FullName -DestinationPath $dest
+          $root = (Get-ChildItem $dest -Directory | Select-Object -First 1).FullName
+          Push-Location $root
+          .\sequent.exe --help
+          if ($LASTEXITCODE -ne 0) { throw 'sequent.exe --help failed' }
+          .\sequent.exe build examples\hello.sq -o hello.bpmn
+          if ($LASTEXITCODE -ne 0) { throw 'sequent.exe build failed' }
+          if (-not (Test-Path hello.bpmn)) { throw 'no output produced' }
+          .\sequent.exe import examples\hello.bpmn -o roundtrip.sq
+          if ($LASTEXITCODE -ne 0) { throw 'sequent.exe import failed' }
+          Write-Host 'extracted ZIP runs correctly outside the build tree'
+          Pop-Location
+
+      # A clean runner has no GHC in the image itself, but the setup step above
+      # installed one. Record the import table so the release can state exactly
+      # which DLLs the executable needs.
+      - name: Report DLL dependencies
+        run: |
+          $exe = Get-ChildItem dist\pre-alpha\*\sequent.exe | Select-Object -First 1
+          $objdump = Get-Command objdump.exe -ErrorAction SilentlyContinue
+          if ($objdump) {
+            & $objdump.Source -p $exe.FullName | Select-String 'DLL Name:'
+          } else {
+            Write-Host 'objdump not available on this runner'
+          }
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sequent-windows-x86_64
+          path: |
+            dist/releases/*.zip
+            dist/releases/*.zip.sha256
+          if-no-files-found: error
+
+      # Pick the notes file matching the version that was actually packaged,
+      # rather than hardcoding one release's filename.
+      - name: Resolve the release notes
+        id: notes
+        run: |
+          $zip = Get-ChildItem dist\releases\*.zip | Select-Object -First 1
+          $version = $zip.BaseName -replace '^sequent-', '' -replace '-windows-x86_64$', ''
+          $notes = "dist/releases/RELEASE-NOTES-$version.md"
+          if (Test-Path $notes) {
+            Write-Host "using $notes"
+          } else {
+            Write-Host "no notes file for $version; the release body will be left empty"
+            $notes = ''
+          }
+          "path=$notes" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Attach to the GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/releases/*.zip
+            dist/releases/*.zip.sha256
+          prerelease: true
+          body_path: ${{ steps.notes.outputs.path }}
