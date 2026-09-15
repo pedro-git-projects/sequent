@@ -135,7 +135,7 @@ The system is built on one base unit `U = 10 px`, chosen because the BPMN canoni
 | `LINE_H` | line height | `14 px` |
 | `LABEL_PAD` | internal text padding inside shapes | `0.5U = 5` |
 | `LABEL_GAP` | shape <=> external label | `0.5U = 5` |
-| `LABEL_MAX_W` | external label max width | `9U = 90` |
+| `LABEL_MAX_W` | external label wrap width, and the width a wrapped label reserves (LABEL-012) | `9U = 90` |
 | `LABEL_MAX_LINES` | external label lines a caption usually takes a design target, not a cap on the measured box (LABEL-012) | `2` |
 | `TASK_MAX_LINES` | internal activity label max lines | `4` |
 | `FLOW_LABEL_OFFSET` | flow label <=>  its segment | `0.5U = 5` |
@@ -1588,7 +1588,11 @@ Equal-height lanes are **not** the default: forcing a lane containing three task
 ### LANE-004 :: Lane growth propagation
 **Priority:** STRONG
 **Rule:** resizing is strictly bottom-up and single-pass: `nodes → nested containers → lanes → pool → diagram`. A lane never shrinks below the extent of its content; a pool never clips a lane. When lane `i` grows by `Δ`, lanes `i+1…n` translate down by `Δ` and the pool grows by `Δ`; content inside translated lanes translates with them (rigid-body).
-**Detect:** content outside a container after a resize.
+
+A lane's content is inset from **both** its vertical borders by `CONTAINER_PAD_X`, the same as a pool's, so the column grid starts at `laneX + CONTAINER_PAD_X` rather than at `MARGIN`. Insetting only the right — which is what happens when the right-hand padding comes from the lane's width formula and nobody writes the left-hand one — puts the first node against the lane border and its caption outside the lane entirely.
+
+And "content" includes captions: a lane is sized from the shapes it holds and from the column grid, neither of which knows how wide a caption is, so a label is checked against its node's lane like the node itself (LABEL-009's containment clause).
+**Detect:** content — shape or label — outside a container after a resize.
 **Repair:** re-run the bottom-up pass.
 
 ---
@@ -1735,8 +1739,10 @@ Accept the new order only if it reduces message-flow crossings by `≥ 2` **and*
 For a **split comb**, the horizontal peel segment starts at `x = cx(gateway)`. Therefore all outgoing labels of one gateway share the same left `x` and form a **vertically aligned stack**, deterministic, and the single most effective device for making Yes/No labels look deliberate.
 
 That shared `x` is `cx(gateway) + 1U`, **moved right until every label in the stack clears the split's own glyph.** A gateway is a diamond: the corners of its bounding box are empty ink, so the box is not the test, but the band beside its centre line is not empty at all, and the axis branch's label sits exactly there, `FLOW_LABEL_OFFSET` above `gy`. At `1U` from centre a `50 px` diamond is still solid, and the label is drawn across the `X`. The *whole* stack moves, not the offending label: moving one would break the alignment the rule exists for, and moving all of them costs a few pixels of run.
+Both the anchor and the overhang are stated in terms of the **direction of travel**, not of the page. A loopback's first horizontal segment runs right-to-left; reading them as page-left and page-right anchors the label at the segment's *end* and overhangs it away from the line entirely, leaving a caption floating beside an arrow it no longer belongs to. A segment travelling right-to-left is mirrored: the label's right edge sits `1U` inside the start, and it overhangs leftward. It is also outside the stack — every peel segment of a comb runs out of the trunk rightward, so a backward segment is not part of that comb.
 ```
-labelX = max( stackX , segStartX + 1U )
+labelX = max( stackX , segStartX + 1U )            (travelling left-to-right)
+       = segStartX − 1U − labelW                   (travelling right-to-left)
 stackX = cx(gateway) + 1U                          , raised so that for every
          label L in the stack whose y-range meets the gateway's:
            labelX ≥ cx + inkReachRight(L) + LABEL_CLEAR
@@ -1766,11 +1772,23 @@ Retrying the whole ladder one grid unit further out, up to `LABEL_PUSH_STEPS = 8
 
 ### LABEL-009 :: Message-flow labels
 **Priority:** MEDIUM
-**Rule:** anchored to the **middle** of the longest segment of the message flow (usually the vertical run in the inter-pool gap), offset `FLOW_LABEL_OFFSET` to the **right** of a vertical segment or above a horizontal one. Message-flow labels are obstacles for other message flows (EDGE-018).
+**Rule:** anchored to the **middle** of the longest segment of the message flow (usually the vertical run in the inter-pool gap), offset `FLOW_LABEL_OFFSET` to the **right** of a vertical segment or above a horizontal one, mirrored to the other side if that anchor is not free. Message-flow labels are obstacles for other message flows (EDGE-018).
+
+A message-flow label **is placed by the formatter**, like every other label, even though message flows are routed after phase 9 — they belong to the collaboration, so no scope's label pass ever saw them. Leaving one unplaced does not leave it unlabelled: the name is serialised either way, and a renderer given no bounds drops the text at the middle of the flow, which for a route crossing the inter-pool gap is squarely on a pool border.
+
+**A label sits inside a container or outside every container; it never straddles a border.** That holds for node labels and flow labels alike, and it is a separate condition from overlapping a shape, because a pool or lane is mostly empty space that a label may legitimately occupy — the border line is not.
+**Detect:** a label rect that overlaps a pool or lane without being contained by it.
 
 ### LABEL-010 :: Artifact labels
 **Priority:** MEDIUM
 **Rule:** data objects and data stores: label centered below the shape, `≤ 2` lines, max width `LABEL_MAX_W`. Text annotations: text is inside the annotation shape (LABEL-001 rules with `LABEL_PAD` and a left bracket band of `1U`).
+
+The bracket band is **not text space**, and the height is measured at the width that is left after it — a further `1U` narrower again, because the renderer supplies its own padding and need not use `LABEL_PAD`. Sizing the box to the text plus `LABEL_PAD` alone gives the renderer a usable width narrower than the one the text was measured against, so it re-wraps, gains a line, and the last one is drawn past the bracket.
+```
+usable  = w − 2·LABEL_PAD − 1U
+w       = clamp(ANNOT_W_MIN, ANNOT_W_MAX, textW + 2·LABEL_PAD + 1U)
+h       = max(2U, wrappedH(text, usable − 1U) + 2·LABEL_PAD)
+```
 
 ### LABEL-011 :: Labels as first-class geometry
 **Priority:** STRONG
@@ -1784,7 +1802,13 @@ A label therefore may not overlap a shape, another label, or a connector. The ex
 **Priority:** STRONG
 **Rule:** layout must use a real text-measurement function (font metrics), not `charCount × avgWidth`.
 
-**An external label's box is as tall as its wrapped text, always.** Two lines is what most captions take and what LABEL-002/003 are written around, but it is not a cap on the *measurement*: BPMN DI carries a bounds rectangle and the renderer sets the element's own `name` inside it, so a formatter that measures two lines and emits a caption wrapping to four has not shortened the label, it has shortened only its own idea of it, and the extra lines are drawn over whatever the band below reserved. Ellipsising the measured text is the same mistake under a better name, and LABEL-006 already forbids it: the ellipsis never reaches the file, so it hides the label from the formatter alone.
+**An external label's box is as wide as the width it was wrapped to, and as tall as its wrapped text.**
+
+The width first, because it is the less obvious half. The widest line *this* formatter produced is not the width the label occupies: the renderer receives a bounds rectangle and the element's `name`, breaks the name itself, and need not agree about where. Camunda Modeler sets external labels one point smaller than the metrics here measure them with, so it fits more words per line, produces fewer and wider lines, and centres the result on the declared box — which a box reported at the widest of *our* lines does not contain. A caption measured `59 px` wide is then drawn `90 px` wide, `15 px` past each edge, across whatever was placed beside it.
+
+So a label that wraps at all reserves `LABEL_MAX_W`. Any renderer breaking the same text at that width produces lines no wider, whatever font it uses, and the guarantee holds without knowing which renderer it is. A label that fits on one line keeps its own width: there is no second line for a different wrapping to pull up, and reserving the full width for `"yes"` would move every anchor around it for nothing.
+
+**And the box is as tall as its wrapped text, always.** Two lines is what most captions take and what LABEL-002/003 are written around, but it is not a cap on the *measurement*: BPMN DI carries a bounds rectangle and the renderer sets the element's own `name` inside it, so a formatter that measures two lines and emits a caption wrapping to four has not shortened the label, it has shortened only its own idea of it, and the extra lines are drawn over whatever the band below reserved. Ellipsising the measured text is the same mistake under a better name, and LABEL-006 already forbids it: the ellipsis never reaches the file, so it hides the label from the formatter alone.
 
 Where a cap is real, it is because something else absorbs it: an activity's internal text is capped at `TASK_MAX_LINES` because the shape *grows* to meet it (LAYOUT-029) and HC-012 checks the result. There is no equivalent growth for a label beside a shape, so there is no equivalent cap. If no measurement is available, the fallback is `w ≈ 0.62 · FONT_SIZE · charCount` with an added `10 %` safety margin, and all label-driven growth thresholds are treated as approximate. The chosen measurement function is part of the determinism contract (LAYOUT-027): the same font metrics must be used in every run.
 
