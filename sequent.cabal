@@ -23,7 +23,6 @@ extra-source-files:
     docs/compiler.md
     docs/testing.md
     docs/architecture.md
-    docs/design.md
     docs/current-status.md
     docs/spec-compliance.md
     docs/migration.md

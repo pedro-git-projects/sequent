@@ -154,7 +154,6 @@ afterwards; that is the point of having them.
 | [`docs/compiler.md`](docs/compiler.md) | building, the CLI, output, failure modes, determinism |
 | [`docs/testing.md`](docs/testing.md) | running tests, writing your own, goldens, smoke tests, debugging |
 | [`docs/architecture.md`](docs/architecture.md) | the four representations, the modules, the id policy, determinism |
-| [`docs/design.md`](docs/design.md) | the feature list, the design decisions and their costs, and what Haskell contributed |
 | [`docs/current-status.md`](docs/current-status.md) | what has actually been verified, and what has not |
 | [`docs/spec-compliance.md`](docs/spec-compliance.md) | rule => implementation => test, for every rule in `SPEC.md` |
 | [`docs/import.md`](docs/import.md) | the reverse direction: reading `.bpmn` back into `.sq` |
