@@ -1,0 +1,40 @@
+<idea-plugin>
+    <id>com.github.pedrogitprojects.sequent</id>
+    <name>Sequent</name>
+    <vendor url="https://github.com/pedro-git-projects/sequent">pedro-git-projects</vendor>
+
+    <description><![CDATA[
+        Syntax highlighting for <b>sequent</b> (<code>.sq</code>), a language for
+        defining Camunda 8 workflows that compiles to BPMN.
+        <p>
+        Colours declarations, node kinds, gateway kinds, step properties, labels,
+        embedded FEEL expressions and comments; adds <code>{}</code> brace matching
+        and comment toggling. Colours are configurable under
+        <i>Settings | Editor | Color Scheme | Sequent</i>.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <fileType
+                name="Sequent"
+                language="Sequent"
+                extensions="sq"
+                implementationClass="com.github.pedrogitprojects.sequent.SequentFileType"
+                fieldName="INSTANCE"/>
+        <lang.parserDefinition
+                language="Sequent"
+                implementationClass="com.github.pedrogitprojects.sequent.psi.SequentParserDefinition"/>
+        <lang.syntaxHighlighterFactory
+                language="Sequent"
+                implementationClass="com.github.pedrogitprojects.sequent.highlighting.SequentSyntaxHighlighterFactory"/>
+        <colorSettingsPage
+                implementation="com.github.pedrogitprojects.sequent.highlighting.SequentColorSettingsPage"/>
+        <lang.commenter
+                language="Sequent"
+                implementationClass="com.github.pedrogitprojects.sequent.editor.SequentCommenter"/>
+        <lang.braceMatcher
+                language="Sequent"
+                implementationClass="com.github.pedrogitprojects.sequent.editor.SequentBraceMatcher"/>
+    </extensions>
+</idea-plugin>
