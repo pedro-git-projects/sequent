@@ -326,8 +326,15 @@ Answers, taken from `Sequent.Language.Resolve`:
   right margin.
 * **Loops are `goto`.** There is no `while`, no `repeat` and no loop keyword.
   `goto` is a backward (or forward) sequence flow that ends the current path.
+* **`stop` ends a path that has no end event.** It is not a step and it becomes
+  no BPMN element — it is the *absence* of the implicit connection to whatever
+  comes next. Without it a block could hold only one path that stops short of an
+  end event, because every other one would be joined to the step that followed
+  it.
 * **A step with no successor is a warning**, not an error:
-  `'Activity_b' has no outgoing flow and is not an end event`.
+  `'Activity_b' has no outgoing flow and is not an end event`. Write `stop`
+  after it and the warning drops to an advisory: you have been told, and you
+  have answered.
 
 A named merge, for when something has to refer to it:
 
@@ -335,6 +342,25 @@ A named merge, for when something has to refer to it:
 and prepare join ready { … }
 goto ready
 ```
+
+Two paths that both stop short of an end event need `stop` on each:
+
+```
+xor route "Urgent?" {
+  branch "yes" when "=urgent" {
+    service page "Page on-call" { type "page" }
+    stop
+  }
+  branch "no" otherwise {
+    service queue "Queue it" { type "queue" }
+    stop
+  }
+}
+```
+
+Without the two `stop`s both branches would reach the end of the block, which
+is exactly what the resolver derives `Gateway_route_join` from — a merge the
+process does not have.
 
 ## Reference
 
@@ -422,11 +448,12 @@ Accepted per keyword; anything else is an error at the property.
 | `message` | `message order_placed` | `bpmn:messageEventDefinition` / receive-task `messageRef` | `start`, `end`, `wait`, `throw`, `receive` |
 | `timer` | `timer "PT15M"` | `bpmn:timerEventDefinition` | `start`, `wait` |
 | `signal` | `signal hiring_frozen` | `bpmn:signalEventDefinition` | `start`, `end`, `wait`, `throw` |
-| `error` | `error payment_failed` | `bpmn:errorEventDefinition` | `end` |
+| `error` | `error payment_failed` | `bpmn:errorEventDefinition` | `end`, and `start` inside a `handler` |
 | `escalation` | `escalation overdue` | `bpmn:escalationEventDefinition` | `start`, `end`, `wait`, `throw` |
 | `link` | `link "hop"` | `bpmn:linkEventDefinition` | `start`, `end`, `wait`, `throw` |
 | `terminate` | `terminate` | `bpmn:terminateEventDefinition` | `end` |
-| `compensation` | `compensation` | `bpmn:compensateEventDefinition` | `end`, `throw` |
+| `compensation` | `compensation` | `bpmn:compensateEventDefinition` | `end`, `throw`, and `start` inside a `handler` |
+| `noninterrupting` | `noninterrupting` | `isInterrupting="false"` | `start` inside a `handler` |
 | `doc` | `doc "text"` | `bpmn:documentation` | every step |
 
 An event carries **at most one** definition; a second is an error.
@@ -496,6 +523,8 @@ error.
 | Construct | Syntax | Becomes |
 |---|---|---|
 | boundary event | `on host catch trigger noninterrupting? as name "Label"? { item* }` | `bpmn:boundaryEvent` with `attachedToRef` and `cancelActivity` |
+| event subprocess | `handler name "Label"? { item* }` | `bpmn:subProcess triggeredByEvent="true"` |
+| group | `group name "Label"? { member* }` | `bpmn:group` + a root `bpmn:category` / `bpmn:categoryValue` |
 | annotation | `note name "text" on host` | `bpmn:textAnnotation` + `bpmn:association` |
 | data object | `data name "Label"? (from \| to) host` | `bpmn:dataObjectReference` + `bpmn:dataObject`, plus a `dataOutputAssociation` (`from`) or `dataInputAssociation` (`to`) |
 | explicit flow | `flow a -> b -> c "Label"? guard?` | one `bpmn:sequenceFlow` per pair |
@@ -507,9 +536,73 @@ Triggers are `message name`, `signal name`, `error name`, `escalation name` or
 no identity to declare.
 
 A boundary event attaches only to a task or a subprocess; attaching one to a
-gateway or an event is an error. An empty handler block is a warning.
+gateway, an event or an event subprocess is an error. An empty handler block is
+a warning.
 
 A label or condition on `flow` needs a single pair, not a chain.
+
+### Event subprocesses
+
+`handler` is BPMN's event subprocess. It holds a body like `subprocess`, but it
+is reached by its start event's trigger rather than by a sequence flow, so it is
+an *item* and not a step: writing one between two steps leaves those two steps
+connected to each other.
+
+```
+handler recover "Recover" {
+  start caught "Card declined" {
+    error payment_failed
+  }
+  service unwind "Release the stock" { type "wms-release" }
+  end unwound "Released"
+}
+```
+
+The trigger is not written on the `handler` line. It belongs to the start event
+inside, which already has syntax for every trigger BPMN allows, and writing it
+in two places would let the two disagree. The rules:
+
+* exactly one `start` step, and it must carry a trigger — an event subprocess
+  that waits for nothing can never run;
+* at least one `end` step, like any subprocess;
+* `noninterrupting` on that start event makes it BPMN's `isInterrupting="false"`:
+  the trigger is handled and the enclosing scope keeps running.
+
+`error` and `compensation` are properties of a `start` step only inside a
+`handler`. That is not a restriction this language invented: an error start
+event is the one place BPMN gives a start event an enclosing scope to catch
+something from, and outside one it would mean nothing. Writing either elsewhere
+is an error naming the reason.
+
+`handler` and `on … catch` answer different questions. A boundary event hangs on
+one step and catches what that step throws; a handler sits in the scope and
+catches what anything in it throws. LAYOUT-035 stacks handlers below the flow
+they guard.
+
+### Groups
+
+A `group` draws a rectangle round the steps it names.
+
+```
+group money "Money moves" {
+  charge
+  refund
+}
+```
+
+Membership is listed because the source carries no geometry. In a `.bpmn` a
+group *is* a rectangle and its members are whatever it happens to enclose —
+which is the one place in the format where meaning is carried by coordinates,
+and exactly the coupling this language exists to undo. Here the members are the
+declaration and ART-005 derives the rectangle from them: the box is their
+bounding box plus `CONTAINER_PAD_Y`, and it constrains nothing.
+
+The reverse direction is the reason the importer reads any geometry at all. See
+[`import.md`](import.md).
+
+Members must be steps in the same scope as the group: a rectangle cannot be
+drawn round two things in different coordinate frames, so a group naming a step
+inside a subprocess is an error. Declare a second group in there instead.
 
 ### One connection per pair
 
@@ -635,7 +728,7 @@ serialised, **Tested** means a test in `test/` covers it.
 | Text annotations (`note`) | ✅ | ✅ | ✅ | ✅ parser, layout, `examples/order.sq` golden |
 | Data objects (`data`) | ✅ | ✅ | ✅ | ⚠ parser, id and layout tested; no BPMN-output test |
 | Data stores | ❌ | ⚠ `AkDataStore` exists, unreachable | ⚠ code path exists | ❌ |
-| Groups (BPMN artifact) | ❌ | ❌ | ❌ | ❌ |
+| Groups (`group`, BPMN artifact + category) | ✅ | ✅ | ✅ | ✅ |
 | Multi-instance (`each` / `collect`) | ✅ | ✅ | ✅ | ✅ |
 | I/O mappings | ✅ | ✅ | ✅ | ✅ |
 | Task headers | ✅ | ✅ | ✅ | ✅ |
@@ -647,7 +740,10 @@ serialised, **Tested** means a test in `test/` covers it.
 | Comments | ✅ | ✅ kept in the AST | n/a (never serialised) | ✅ parser and formatter |
 | Generated BPMN DI (shapes, edges, labels) | n/a | n/a | ✅ | ✅ |
 | Compensation *activity* / association | ❌ | ❌ | ❌ | ❌ |
-| Transaction subprocess, event subprocess | ❌ | ❌ | ❌ | ❌ |
+| Event subprocess (`handler`) | ✅ | ✅ | ✅ | ✅ |
+| Non-interrupting start event (`noninterrupting`) | ✅ | ✅ | ✅ | ✅ |
+| Path that stops without an end event (`stop`) | ✅ | ✅ | n/a (no element) | ✅ |
+| Transaction subprocess | ❌ | ❌ | ❌ | ❌ |
 | Ad-hoc subprocess | ❌ | ❌ | ❌ | ❌ |
 | Collapsed subprocess | ❌ | ❌ | ❌ | ❌ |
 | Reading `.bpmn` back (`sequent import`) | n/a | ✅ | n/a | ✅ every example round-trips |
@@ -667,12 +763,11 @@ dropped silently:
 
 | in the file | what you get |
 |---|---|
-| `bpmn:group` | `warning: a BPMN group 'Group_1' … the language has no group construct` |
 | `bpmn:dataStoreReference` | `warning: a data store reference 'Store_1' …` |
 | `bpmn:childLaneSet` | `warning: a nested lane set in lane 'Lane_o' … flatten the lanes, or split the process` |
-| `bpmn:subProcess triggeredByEvent="true"` | `warning: an event subprocess 'Activity_es' … inline its contents, or model it as a call activity` |
 | `bpmn:transaction`, `bpmn:adHocSubProcess` | `warning: a 'transaction' 'Activity_tx' …` |
-| a collapsed subprocess | `warning: a collapsed subprocess 'Activity_c' …` |
+| a collapsed subprocess | `advisory: … is drawn collapsed and will come back expanded` |
+| a `bpmn:group` enclosing nothing | `warning: group 'Group_1' encloses no step and was read with no members` |
 | any other element | reported by tag and id, so nothing goes missing unnoticed |
 
 The one thing that does not survive is an **element id that is not a name**.
@@ -804,16 +899,22 @@ steps that are already consecutive silently produces two parallel sequence flows
 (`Flow_a_b`, `Flow_a_b_2`). There is no duplicate-flow diagnostic; you find out
 because the layout engine then reports `HC-005`.
 
-**No BPMN reader.** The direction is `.sq` → `.bpmn`, once. A hand-edit to the
-generated file is lost on the next build.
+**A hand-edit to the generated file is still lost on the next build.** The
+source is the truth and the `.bpmn` is a build artifact. `sequent import` brings
+a `.bpmn` back to `.sq`, which is how a hand-edit is recovered — deliberately,
+once, rather than merged on every build.
 
 **No deployment tooling.** The compiler writes a file; getting it into a Camunda
 8 cluster is a separate job with separate tools.
 
-**Nested lanes, data stores, groups, event subprocesses, transaction
-subprocesses, collapsed subprocesses and compensation activities have no
-syntax.** For lanes and data stores the semantic model has a field
-(`laneChildren`, `AkDataStore`) that nothing can populate from source.
+**Nested lanes, data stores, transaction subprocesses, ad-hoc subprocesses and
+compensation activities have no syntax.** For lanes and data stores the semantic
+model has a field (`laneChildren`, `AkDataStore`) that nothing can populate from
+source.
+
+**A collapsed subprocess comes back expanded.** Collapsed is a property of the
+drawing rather than of the process, and this compiler writes every subprocess
+expanded. The import says so as an advisory.
 
 **A process with no label reports as `process ''`.** The "has no start event"
 diagnostic prints the label rather than the identifier, so an unlabelled process
@@ -823,7 +924,7 @@ shows an empty name. Cosmetic.
 `PreviousGeometry`, and `CompileOptions` carries `coPrevious`, but no flag
 supplies one. Library-only today.
 
-**12 SPEC layout rules are partial and 5 are unimplemented.** Each keeps a row,
+**10 SPEC layout rules are partial and 4 are unimplemented.** Each keeps a row,
 with its gap named, in [`spec-compliance.md`](spec-compliance.md).
 
 ## Grammar
@@ -843,11 +944,14 @@ citem       := 'pool' name label? ('{' item* '}')?
 item        := 'doc' string
              | 'lane' name label? '{' item* '}'
              | 'on' name 'catch' trigger 'noninterrupting'? 'as' name label? '{' item* '}'
+             | 'handler' name label? '{' item* '}'
+             | 'group' name label? '{' name* '}'
              | 'note' name string 'on' name
              | 'data' name label? ('from' | 'to') name
              | 'pin' name 'at' int int
              | 'flow' name ('->' name)+ label? guard?
              | 'goto' name
+             | 'stop'
              | gateway name label? ('join' name)? '{' branch* '}'
              | 'subprocess' name label? '{' item* '}'
              | step name label? ('{' prop* '}')?
@@ -872,7 +976,7 @@ prop        := 'type' string | 'retries' int
              | 'collect' key 'from' string
              | 'message' name | 'signal' name | 'error' name | 'escalation' name
              | 'timer' string | 'link' string
-             | 'terminate' | 'compensation' | 'doc' string
+             | 'terminate' | 'compensation' | 'noninterrupting' | 'doc' string
 
 name        := [A-Za-z_][A-Za-z0-9_]*      -- and not a reserved word
 key         := name | string

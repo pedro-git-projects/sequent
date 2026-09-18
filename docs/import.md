@@ -23,6 +23,21 @@ gives you the same process under this compiler's arrangement. That is the
 intended use of the command, not a shortfall in the reader — the whole premise
 of the language is that coordinates are a derived artifact.
 
+**One exception, and it proves the rule: groups.** BPMN records a group as a
+rectangle and has no membership relation at all — which elements a group holds
+is whatever its rectangle happens to enclose. It is the one construct in the
+format whose *meaning* is carried by coordinates, so it is the one construct
+whose coordinates the importer has to read. It reads the group's bounds and the
+bounds of the flow nodes in the same scope, takes as members those whose centre
+falls inside (with a grid unit of slack, because a modeller drags a group
+roughly round a run of steps), and then throws all of it away: the members
+become a `group` block and ART-005 computes the rectangle again on the way out.
+Boundary events are never members — they are drawn on their host's border, so a
+group holding the host encloses them whatever the author meant.
+
+A group whose rectangle encloses nothing is reported and comes back with no
+members.
+
 ## The pipeline
 
 ```
@@ -78,6 +93,14 @@ The comparison is on **symbolic names**, not on raw ids, for the reason in the
 next section, and on a normalised graph: document order is zeroed, nodes are
 sorted by id and flows by their endpoints, since neither ordering is semantic.
 
+The message has to name something. An earlier version compared the whole graph
+but could describe only part of it, so a divergence in a field it did not
+inspect — a lane, a process attribute, anything inside a subprocess — reported
+`no difference found`, which tells the reader nothing and the maintainer only
+that the bug is in the reporting. It now walks processes, lanes and nested
+scopes, and the last-resort message says outright that the field is one the
+check does not inspect rather than implying the graphs match.
+
 ## What survives
 
 | | |
@@ -97,6 +120,9 @@ sorted by id and flows by their endpoints, since neither ordering is semantic.
 | Pools and message flows | always |
 | Text annotations and their associations | always |
 | Boundary events, interrupting and not | always |
+| Event subprocesses, interrupting and not | always, as `handler` |
+| Groups | members recovered from the rectangle; text from the category value |
+| Paths that stop without an end event | always, as `stop` |
 
 ### Ids survive only when they are names
 
@@ -146,6 +172,14 @@ id — so a step labelled `end` does not produce a step named `end`.
 * **Layout pins** (`pin`). A pin never reaches the semantic graph — it nudges
   the diagram and nothing else — so there is nothing in the XML that says a
   coordinate was chosen rather than computed.
+* **Whether a subprocess was drawn collapsed.** This compiler writes every
+  subprocess expanded. The contents are the same either way; the import says so
+  as an advisory, because the file will not look the same.
+* **A user task without Camunda 8's `zeebe:userTask`.** A `bpmn:userTask` is a
+  user task because of its tag — unlike a `bpmn:task`, whose tag means
+  "undefined" — so a BPMN 2.0 file, or one written for Camunda 7, reads as one
+  and comes back with the `zeebe:userTask` this language's `user` keyword
+  always means. Reported as an advisory rather than done quietly.
 
 ## What it reports
 
@@ -154,11 +188,11 @@ import continues without it. Nothing is dropped silently:
 
 | in the file | reported as |
 |---|---|
-| `bpmn:group` | `a BPMN group 'Group_1' has no equivalent in this language and was skipped` |
 | `bpmn:dataStoreReference` | `a data store reference 'Store_1' …` |
 | `bpmn:childLaneSet` | `a nested lane set in lane 'Lane_o' … flatten the lanes, or split the process` |
-| `subProcess triggeredByEvent="true"` | `an event subprocess 'Activity_es' … inline its contents, or model it as a call activity` |
-| a collapsed subprocess | `a collapsed subprocess 'Activity_c' …` |
+| a collapsed subprocess | `advisory: … is drawn collapsed and will come back expanded` |
+| a `bpmn:group` enclosing nothing | `group 'Group_1' encloses no step and was read with no members` |
+| `bpmn:userTask` with no `zeebe:userTask` | `advisory: … has no 'zeebe:userTask'; it will come back with one` |
 | `bpmn:transaction`, `bpmn:adHocSubProcess` | `a 'transaction' 'Activity_tx' …` |
 | a second `bpmn:collaboration` | `keep one collaboration per file` |
 | two event definitions on one event | `event 'Event_x' has more than one trigger; kept the first` |
@@ -215,16 +249,39 @@ work to another role partitions correctly: each item is emitted under whichever
 lane its own node belongs to, recursively, rather than under whichever lane the
 gateway happened to be in.
 
+A `flowNodeRef` lists a process's own flow nodes and never a subprocess's, so
+the lane of a step *inside* a subprocess is not in the file at all. Both
+directions therefore infer it the same way, from one rule in
+`Sequent.Bpmn.Semantic.assignOrphanLanes`: a node in no lane takes the lane of
+its highest-ranked predecessor, else its container's, else the first lane. A
+subprocess is drawn inside a lane, so everything drawn inside it is in that lane
+too. That rule used to live in the resolver, where only one of the two
+directions could reach it, and a subprocess inside a lane could not round-trip.
+
+**Paths that stop.** Every path that ends without an end event is closed with
+`stop`, and so is every gateway branch that dead-ends. Both are the same
+problem: two steps written next to each other are connected by the resolver, so
+without a terminator a second dangling path swallows the first, and two
+dangling branches are two branches the resolver counts as reaching the end of
+the block — which is what it derives a merge from. The import used to report
+`this scope has 2 paths that stop without an end event; only one of them can be
+written` and hand back a source that was missing one; there is now a word for
+it and nothing is dropped.
+
+**Event subprocesses** are emitted as `handler` items rather than as steps,
+because nothing flows into one: a step written next to the handler must stay
+connected to the step on its other side.
+
 ## Verification
 
 Every committed example is imported and recompiled on every run of
 `./scripts/check.sh`, and `Sequent.ImportSpec` asserts the same property from
 outside the compiler — independently of the self-check, which is the point of
-doing it twice. All eleven examples import with no diagnostics and recompile to
+doing it twice. All twelve examples import with no diagnostics and recompile to
 identical process elements.
 
 Geometry is not part of that claim. Measured anyway, out of curiosity rather
-than as a guarantee: seven of the eleven come back byte-identical, three come
+than as a guarantee: eight of the twelve come back byte-identical, three come
 back with identical coordinates but the DI elements in a different order —
 the import re-derives the nesting, and that changes document order — and
 `murex` shifts one exception handler down by one band. Do not rely on any of it;
@@ -234,7 +291,9 @@ rely on the process comparison, which is the thing that is checked.
 (`bpmn:`, `bpmn2:`, a default namespace), entity and character-reference
 decoding, a DOCTYPE that is skipped rather than expanded, a malformed document,
 ids that are not names, Zeebe metadata read from the extension rather than the
-tag, and each unsupported construct by name.
+tag, group membership recovered from geometry, non-interrupting flags in both
+directions, dangling paths closed with `stop`, and each remaining unsupported
+construct by name.
 
 **No `.bpmn` written by Camunda Modeler or another tool has been imported yet.**
 The reader is built for them — that is the whole reason it resolves prefixes to

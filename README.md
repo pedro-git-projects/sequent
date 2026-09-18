@@ -69,7 +69,10 @@ Line by line:
 Nothing mentions a coordinate or an element id, yet the output contains a complete `<bpmndi:BPMNDiagram>` with a `<dc:Bounds>` per node and waypoints per flow.
 
 A larger one, showing a decision, a loop, a boundary error and a parallel split,
-is [`examples/order.sq`](examples/order.sq).
+is [`examples/order.sq`](examples/order.sq);
+[`examples/handlers.sq`](examples/handlers.sq) shows the constructs that have no
+sequence flow of their own — event subprocesses, a group, and a path that stops
+without an end event.
 
 ## Other commands
 
@@ -101,8 +104,14 @@ process id, the message names and every correlation key are kept either way.
 The import **checks its own work**: the source it produces is compiled back to a
 process and compared with the one that was read. A mismatch is an error naming
 the difference, not a file you have to diff yourself. A construct the language
-cannot express — an event subprocess, a transaction, nested lanes, a data store,
-a BPMN group — is reported by id rather than dropped quietly.
+cannot express — a transaction, an ad-hoc subprocess, nested lanes, a data store
+— is reported by id rather than dropped quietly.
+
+A BPMN **group** is the one thing the importer reads geometry for. BPMN records
+a group as a rectangle and has no membership relation at all, so which elements
+a group holds is whatever its rectangle encloses; the importer recovers the
+members from the drawing, writes them as a list, and throws the rectangle away
+for the layout rules to compute again.
 
 Diagnostics carry a category, a span and a caret:
 
@@ -122,6 +131,25 @@ error[layout/HC-004]: connector passes through Activity_a (Flow_s_c)
   = help: re-route, or insert a corridor by increasing band spacing
 ```
 
+## The demos
+
+Two, making the same argument: one small change to a process, made once by
+hand in the XML and once in the source, and what each one costs.
+
+```bash
+./scripts/demo.sh           # in the terminal, ending in Camunda Modeler
+./scripts/demo-visual.sh    # in the browser, with the diagram on screen
+```
+
+`demo-visual.sh` compiles the real examples, renders the BPMN diagram
+interchange of each result as SVG, and animates the layout from one
+compilation to the next, so the claim that the coordinates are derived is
+something you watch rather than read. It writes one self-contained HTML file
+with no network dependency, in a fixed 16:9 frame - arrow keys or click to
+step, `a` to autoplay, `f` for the recording frame. `--stills DIR` writes one
+1920x1080 PNG per scene instead, for a post that wants images rather than a
+video.
+
 ## Running tests
 
 ```bash
@@ -129,7 +157,7 @@ error[layout/HC-004]: connector passes through Activity_a (Flow_s_c)
 cabal test                # the test suite alone
 ```
 
-Current result: **758 examples, 0 failures**.
+Current result: **826 examples, 0 failures**.
 
 The suite is a single hspec executable. Filter it with `--match`, which takes a
 substring of the `describe`/`it` path:
@@ -177,20 +205,20 @@ buys, stage by stage, with the type and module that carries it.
 
 ## What is in scope
 
-Start, end, intermediate and boundary events with message, timer, signal, error, escalation, link, compensation and terminate definitions; abstract, service, user, manual, script, business-rule, send and receive tasks; call activities; expanded subprocesses; exclusive, parallel, inclusive, event-based and complex gateways; sequence flows with FEEL conditions and defaults; lanes; pools and message flows; text annotations and data objects; multi-instance loops.
+Start, end, intermediate and boundary events with message, timer, signal, error, escalation, link, compensation and terminate definitions; non-interrupting start events; abstract, service, user, manual, script, business-rule, send and receive tasks; call activities; expanded subprocesses; event subprocesses; exclusive, parallel, inclusive, event-based and complex gateways; sequence flows with FEEL conditions and defaults; paths that stop without an end event; lanes; pools and message flows; text annotations, data objects and groups; multi-instance loops.
 
 Camunda: `zeebe:taskDefinition`, `zeebe:ioMapping`, `zeebe:taskHeaders`,
 `zeebe:userTask`, `zeebe:formDefinition`, `zeebe:assignmentDefinition`,
 `zeebe:taskSchedule`, `zeebe:script`, `zeebe:calledDecision`,
 `zeebe:calledElement`, `zeebe:loopCharacteristics`, `zeebe:subscription`.
 
-**TODO**: nested lanes, data stores, BPMN groups, event subprocesses, transaction subprocesses, collapsed subprocesses and compensation activities. The importer reads a file containing any of them and reports each one by id rather than dropping it quietly. The [feature matrix](docs/language.md#feature-matrix) is the exhaustive list, cell by cell.
+**TODO**: nested lanes, data stores, transaction subprocesses, ad-hoc subprocesses and compensation activities. The importer reads a file containing any of them and reports each one by id rather than dropping it quietly. A collapsed subprocess imports fine and comes back expanded, with an advisory saying so. The [feature matrix](docs/language.md#feature-matrix) is the exhaustive list, cell by cell.
 
 ## Verification
 
 ```bash
 cabal build all      # -Wall clean, zero warnings
-cabal test           # 758 examples, 0 failures
+cabal test           # 826 examples, 0 failures
 ./scripts/check.sh   # the above, plus every example against its golden,
                      # plus a .bpmn -> .sq -> .bpmn round trip of each one
 ```

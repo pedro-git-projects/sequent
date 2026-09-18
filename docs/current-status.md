@@ -1,7 +1,7 @@
 # Current status
 
 A factual report on what has actually been verified in this repository, written
-by running the things it describes. Dated 2026-09-14, against version
+by running the things it describes. Dated 2026-09-17, against version
 `0.2.0.0`, GHC 9.8.4, cabal-install 3.18.1.0 on Linux.
 
 ## Build
@@ -19,12 +19,12 @@ There is no CI configuration.
 
 ```
 $ cabal test
-758 examples, 0 failures
-Finished in 0.5783 seconds
+826 examples, 0 failures
+Finished in 0.9349 seconds
 ```
 
 **All pass.** No subsystem is failing, and nothing is skipped or pending. The
-suite is fourteen hspec modules; see [`testing.md`](testing.md) for what each
+suite is thirteen hspec modules; see [`testing.md`](testing.md) for what each
 covers.
 
 Nothing is asserted here that was not run: the counts above are from an actual
@@ -32,8 +32,8 @@ run of this working tree.
 
 ## Examples
 
-Eleven `.sq` files in `examples/`, each with a committed `.bpmn` golden. **All
-eleven compile with exit status 0 and reproduce their golden byte for byte:**
+Twelve `.sq` files in `examples/`, each with a committed `.bpmn` golden. **All
+twelve compile with exit status 0 and reproduce their golden byte for byte:**
 
 | Example | Exercises |
 |---|---|
@@ -48,6 +48,7 @@ eleven compile with exit status 0 and reproduce their golden byte for byte:**
 | `collaboration.sq` | two pools, message flows |
 | `subprocess.sq` | expanded subprocess, call activity, multi-instance, business rule, script |
 | `murex.sq` | a real process: a pool, an expanded subprocess with its own boundary events and handlers, signal throws, an escalation end, a `goto` out of an exception path |
+| `handlers.sq` | two event subprocesses (one non-interrupting), a group, and a branch that stops without an end event |
 
 `./scripts/check.sh` runs all of this in one command and currently prints
 `check: PASS`.
@@ -55,7 +56,7 @@ eleven compile with exit status 0 and reproduce their golden byte for byte:**
 ## The reverse direction
 
 **Verified over every example.** `sequent import` reads a `.bpmn` and writes the
-`.sq` that produces it. All eleven goldens import with **no diagnostics**, and
+`.sq` that produces it. All twelve goldens import with **no diagnostics**, and
 recompiling the imported source reproduces the same BPMN process elements:
 
 ```
@@ -70,9 +71,9 @@ over-reading:
 
 * **Geometry is not compared, and not preserved.** It is discarded on the way in
   and computed again on the way out — the intended behaviour, not a shortfall.
-  Measured anyway, on this tree: seven of the eleven come back **byte-identical**
-  (`collaboration`, `event-gateway`, `hello`, `lanes`, `linear`, `loop`,
-  `parallel`); three more (`order`, `subprocess`, `onboarding`) come back with
+  Measured anyway, on this tree: eight of the twelve come back **byte-identical**
+  (`collaboration`, `event-gateway`, `handlers`, `hello`, `lanes`, `linear`,
+  `loop`, `parallel`); three more (`order`, `subprocess`, `onboarding`) come back with
   **identical coordinates** but the DI elements in a different order, because the
   import re-derives the nesting and that changes document order; `murex` shifts
   one exception handler down by one band (10px) on a tie-break. None of that is
@@ -90,7 +91,8 @@ over-reading:
 Files this compiler did not write have been exercised only on hand-built inputs
 in `Sequent.ImportSpec` — namespace spellings, entity decoding, DOCTYPE
 skipping, ids that are not names, Zeebe metadata read from the extension rather
-than the tag, and each unsupported construct. **No `.bpmn` produced by Camunda
+than the tag, group membership recovered from geometry, and each remaining
+unsupported construct. **No `.bpmn` produced by Camunda
 Modeler or any other tool has been imported**, for the same reason nothing has
 been opened in Modeler: it needs a person with the tool. See
 [`import.md`](import.md).

@@ -22,7 +22,7 @@ Current result:
 === build
   ok
 === test
-  758 examples, 0 failures
+  826 examples, 0 failures
   ok
 === examples
   examples/collaboration.sq: ok
@@ -65,7 +65,7 @@ cabal test                 # the whole suite, summarised
 cabal test --test-show-details=direct   # the whole suite, every example printed
 ```
 
-Current result: **758 examples, 0 failures**, in about 0.6 s.
+Current result: **826 examples, 0 failures**, in about 0.9 s.
 
 The suite is one hspec `exitcode-stdio-1.0` test-suite called `spec`, whose
 `main` is `test/Spec.hs`. That file lists the fourteen modules and the
@@ -78,14 +78,14 @@ The suite is one hspec `exitcode-stdio-1.0` test-suite called `spec`, whose
 | `Sequent/XmlSpec.hs` | `Sequent.Camunda.Xml` | attribute and text escaping, element rendering |
 | `Sequent/MetricsSpec.hs` | `Sequent.Text.Metrics` | text measurement, wrapping, the activity growth ladder |
 | `Sequent/ParserSpec.hs` | `Sequent.Language.Parser` | the grammar: declarations, steps, control flow, attachments, lexing |
-| `Sequent/ResolveSpec.hs` | `Sequent.Language.Resolve` | implicit chaining, derived merges, name resolution, property rules, lanes, Camunda metadata |
+| `Sequent/ResolveSpec.hs` | `Sequent.Language.Resolve` | implicit chaining, derived merges, `stop`, event subprocesses, groups, name resolution, property rules, lanes, Camunda metadata |
 | `Sequent/PrettySpec.hs` | `Sequent.Language.Pretty` | formatter idempotence, no reordering, canonical layout, every example |
 | `Sequent/IdSpec.hs` | `Sequent.Bpmn.Id` | the id policy: NCName validity, no label-derived ids, collision suffixes |
 | `Sequent/SerializeSpec.hs` | `Sequent.Camunda.Serialize` | BPMN output, by **re-parsing the XML and querying the tree**, never by string matching |
 | `Sequent/LayoutInvariantSpec.hs` | `layout invariants` | the hard constraints of SPEC §C over a corpus of nineteen process shapes |
-| `Sequent/SpecRuleSpec.hs` | `SPEC rules` | 118 tests, 112 of them under a `test_<RULE-ID>_<what>` name that says which rule they check |
+| `Sequent/SpecRuleSpec.hs` | `SPEC rules` | 128 tests, 111 of them under a `test_<RULE-ID>_<what>` name that says which rule they check |
 | `Sequent/DeterminismSpec.hs` | `determinism` | byte-identical output under eight shuffles of every input collection |
-| `Sequent/ImportSpec.hs` | `import` | the XML reader, the BPMN reader, name recovery, and a `.bpmn` → `.sq` → `.bpmn` round trip over every example |
+| `Sequent/ImportSpec.hs` | `import` | the XML reader, the BPMN reader, name recovery, group membership recovered from geometry, dangling paths closed with `stop`, and a `.bpmn` → `.sq` → `.bpmn` round trip over every example |
 | `Sequent/GoldenSpec.hs` | `golden` | the canonical examples of SPEC §L at exact coordinates, plus byte-exact `.bpmn` goldens for every example |
 | `Sequent/PerformanceSpec.hs` | `performance` | 10 / 50 / 150 / 500 nodes lay out with no tier-0 or tier-1 violation |
 | `Sequent/Test/Support.hs` | — | helpers: `compileOk`, `compileXml`, `layoutOf`, `graphOf`, `diagsOf`, and a small read-only XML parser |

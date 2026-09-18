@@ -14,7 +14,7 @@
 | 1 | Coordinate and layout model |
 | 2 | Hierarchy of layout objectives and conflict resolution |
 | C | Hard constraints (`HC-001…016`) |
-| D | Structural layout rules (`LAYOUT-001…034`) |
+| D | Structural layout rules (`LAYOUT-001…035`) |
 | E | Connector routing rules (`EDGE-001…025`) |
 | F | Branching rules (`BRANCH-001…023`) |
 | G | Pool and lane rules (`LANE-001…015`) |
@@ -347,7 +347,7 @@ gapBetween(c,c+1) =
 **Rule:** the spine is the unique path from the scope entry to the scope exit obtained by repeatedly selecting, at each split, the **rank-1 branch** under the BRANCH-007 ordering, and at each merge continuing on the merged path. Formally the spine is the sequence of nodes on the *dominator–post-dominator chain* (nodes that dominate and post-dominate the exit), extended through each split by its rank-1 branch.
 **Geometry:** `spine = [n_0 … n_k]`, `spineY` = a single constant per scope.
 **Rationale:** a diagram without an identified spine cannot have a stable baseline, and every vertical decision in §BRANCH depends on knowing which path keeps the axis.
-**Exceptions:** for a scope whose entry has no dominator chain (multiple start events), pick the chain starting at the start event with the lowest `(documentOrder, id)`, and treat the other start events as branches merging into it.
+**Exceptions:** for a scope whose entry has no dominator chain (multiple start events), pick the chain starting at the start event with the lowest `(documentOrder, id)`, and treat the other start events as branches merging into it. An **event subprocess is never on the spine** whatever the chain construction says: no sequence flow reaches one, so it is on no path and therefore on no main path (LAYOUT-035).
 **Conflict:** none: spine identification precedes all placement.
 **Detect:** spine is empty or non-contiguous.
 **Repair:** fall back to the longest path in the DAG (max layer span), ties by lowest total id-hash-free lexicographic id sequence.
@@ -789,6 +789,32 @@ Do **not** collapse or merge gateways (that is a semantic change). Do **not** in
 **Rationale:** components must not interleave; left alignment makes their independence obvious.
 **Detect:** two components with overlapping bboxes or different left edges.
 **Repair:** re-stack.
+
+---
+
+### LAYOUT-035 :: Event subprocess placement
+**Priority:** MEDIUM
+**Applies when:** a scope contains an event subprocess (`triggeredByEvent="true"`).
+**Elements:** the event subprocess container and its contents.
+**Rule:** event subprocesses take part in no layer and no column, and are **stacked below the rest of the scope** after everything else has been placed:
+1. They claim no column width (LAYOUT-005) and are not on the spine (LAYOUT-006). An element no sequence flow reaches cannot be on the main path, and treating one as a spine node straightens the whole diagram against a container the reader's eye never follows.
+2. The scope is laid out without them. Their boxes are then placed below the resulting bbox in canonical `(documentOrder, id)` order, at `BRANCH_GAP_Y` between boxes, all left-aligned with the scope's left edge.
+3. The remaining content is pulled back up and left by whatever whole grid units the relocation freed, so a handler never costs the flow a margin.
+4. Each container is sized by LAYOUT-019 exactly like an expanded subprocess, and its contents are placed inside it by the same recursion: the two differ in how they are entered, not in how they are drawn.
+5. **With lanes, "below the flow" means below the flow of the handler's own lane.** An event subprocess is listed in a `flowNodeRef` like any other flow node, so it belongs to a lane and HC-003 keeps it inside one. Handlers of one lane stack under each other, left-aligned at `laneX + CONTAINER_PAD_X`; the lane then grows around them under LANE-003 and LANE-004, which is why the relocation runs **before** the repair pass rather than after it.
+
+**Geometry:**
+```
+base(L)   = bbox( nodes of lane L that are not handlers )   # the whole scope when there are no lanes
+y(h_0)    = bottom(base(lane(h_0))) + BRANCH_GAP_Y
+y(h_j+1)  = y(h_j) + height(h_j) + BRANCH_GAP_Y
+x(h_j)    = laneX(lane(h_j)) + CONTAINER_PAD_X              # left(base) when there are no lanes
+```
+**Rationale:** an event subprocess is a disconnected component, so LAYOUT-034 would leave it wherever the component ordering happened to reach it — which, for a handler declared after the flow it handles, is *above* that flow. Below is also what it means: a handler is read after the process it guards, the way a boundary handler is read below the activity it hangs on (LAYOUT-017).
+**Exceptions:** none. Relocation is free in the sense ART-005 means — no edge touches the container, so moving it can introduce no crossing.
+**Conflict:** with LAYOUT-034, which this supersedes for this one class of component.
+**Detect:** an event subprocess whose box overlaps the bbox of the scope's connected content.
+**Repair:** re-stack below.
 
 ---
 
@@ -1565,6 +1591,14 @@ laneX = poolInnerX ; laneW = poolW − POOL_LABEL_BAND
 laneY(0) = poolY ; laneY(i) = laneY(i−1) + laneH(i−1)
 contentX(L) = laneX + LANE_LABEL_BAND·depth(L) + CONTAINER_PAD_X
 ```
+**Lane width** is likewise the greater of the width the columns asked for and
+the width the widest lane's content needs:
+```
+laneW = max( poolW − POOL_LABEL_BAND, max over L of ( rightmost(L) + CONTAINER_PAD_X − laneX ) )
+```
+It is one width for every lane, not one per lane: lanes tile their pool (HC-007),
+so a lane that has to hold something wider than the columns allowed for widens
+all of them rather than stepping out of the stack.
 **Detect:** unequal lane widths, gaps, or `Σ laneH ≠ poolH`.
 **Repair:** recompute.
 
@@ -1574,10 +1608,19 @@ contentX(L) = laneX + LANE_LABEL_BAND·depth(L) + CONTAINER_PAD_X
 **Priority:** STRONG
 **Rule:** lane height is **content-dependent, not equal**:
 ```
-laneH(L) = max( LANE_MIN_H, contentH(L) + 2·CONTAINER_PAD_Y )
+laneH(L) = max( LANE_MIN_H, contentH(L) + 2·CONTAINER_PAD_Y, reach(L) )
 contentH(L) = (max over content of bottom) − (min over content of top),
               including external labels, exception bands, and loop corridors owned by nodes in L
+reach(L)    = (max over content of bottom) + CONTAINER_PAD_Y − laneY(L)
 ```
+
+`reach` is the binding term whenever the content is not centred in the lane. A
+lane's **top** edge is fixed by the tiling of LANE-002 — only its height is free
+— so a member that sits well down the lane needs the distance from the lane's
+own top covered, not the height of the content taken on its own. The two agree
+exactly when the content begins one `CONTAINER_PAD_Y` below the lane's top,
+which is true of an ordinary flow and false of anything stacked beneath it
+(LAYOUT-035).
 Equal-height lanes are **not** the default: forcing a lane containing three tasks to the height of a lane containing a nested region wastes an enormous amount of vertical space and dilutes the association between a lane and its content. Equal heights are available as `LANE_EQUAL_HEIGHT = true` for presentation decks.
 **Exception:** a lane with no content still gets `LANE_MIN_H`.
 **Detect:** `laneH < contentH + 2·CONTAINER_PAD_Y`, or `laneH > contentH + 2·CONTAINER_PAD_Y + 4U` (excess).
@@ -1850,6 +1893,12 @@ port_k = offset port at cx(host) + (k − (K+1)/2)·PORT_OFFSET_MIN
 ### ART-005 :: Groups
 **Priority:** MEDIUM
 **Rule:** a group is a rectangle enclosing its members with padding `CONTAINER_PAD_Y` on all sides, drawn behind everything, and **it does not constrain layout**, it is computed after node placement as the bounding box of its members plus padding. If the members are not contiguous (their bbox contains non-members), emit an advisory; do not move nodes to satisfy a group. Group label: top-left, inside, offset `1U`.
+
+**Membership is an input, not an output.** BPMN records a group as a rectangle and has no membership relation at all: which elements a group holds is whatever its rectangle happens to enclose, which is the one place in the format where meaning is carried by coordinates. This specification inverts that. The members are given, the rectangle is derived from them, and the two directions meet at this rule — a compiler writes the box that contains exactly the given members, and a reader recovers the members as the elements the box contains. A member whose shape belongs to another scope has no box in this frame and is not drawn round; that is a source error, not a layout decision.
+
+A group takes no artifact gutter and joins no artifact row (ART-002): it has no host and no association, so there is nothing for it to be beside. It is the only artifact for which this is true.
+
+The group's rectangle participates in diagram bounds (LAYOUT-031), which is its one visible effect on placement: a group drawn round the topmost node extends `CONTAINER_PAD_Y` above it, and the whole diagram is translated to keep it on the page. Nothing moves with respect to anything else, which is what "does not constrain layout" means.
 **Rationale:** groups are annotations, not containers; letting them drive layout produces severe distortion for zero semantic gain.
 **Detect:** group bbox containing non-members.
 **Repair:** advisory only.
@@ -2031,6 +2080,8 @@ P7:
          # above(v) = h(v)/2 for every node but an expanded subprocess,
          # whose axis is its internal spine and whose extent is asymmetric
   size containers bottom-up                                   # LAYOUT-019, LANE-004
+  restack event subprocesses below the scope bbox             # LAYOUT-035
+  place each group as inflate(PAD_Y, bbox(members))           # ART-005
 
 # ── Phase 8: connector routing ─────────────────────────────── RG → RG.waypoints
 P8:
@@ -2627,6 +2678,24 @@ rules:
   tier: T1
   condition: "SESE decomposition fails"
   action: {algorithm: sugiyama_weighted_median, sweeps: 4, bands: unreserved, symmetry: disabled, isolate_as: opaque_block, halo: 2U}
+
+- id: LAYOUT-035
+  name: event_subprocess_placement
+  priority: MEDIUM
+  tier: T2
+  condition: "scope contains a subProcess with triggeredByEvent=true"
+  action: {columns: excluded, spine: excluded, place: below_lane_bbox, order: [documentOrder, id], gap: BRANCH_GAP_Y, align: "laneX + CONTAINER_PAD_X", reclaim: whole_units, runs_before: collision_repair}
+  detect: "box overlaps the bbox of the scope's connected content"
+  repair: restack_below
+
+- id: ART-005
+  name: groups
+  priority: MEDIUM
+  tier: T2
+  condition: "scope declares a group"
+  action: {geometry: "inflate(CONTAINER_PAD_Y, bbox(members))", constrains_layout: false, gutter: none, participates_in: [diagram_bounds]}
+  detect: "group bbox contains a non-member"
+  repair: advisory_only
 
 quality_gates_fail_build:
   - "any T0 penalty > 0"

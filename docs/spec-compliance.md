@@ -6,12 +6,12 @@ the cases the compiler can produce but not in full generality, and the gap is
 named. Rules the compiler does not implement keep their row, with the reason in
 the status column.
 
-As of this writing: 11 rows are **partial** and 4 rows (5 rules, since
+As of this writing: 10 rows are **partial** and 3 rows (4 rules, since
 EDGE-022/023 share a row) are **not implemented**. Everything else is complete.
 
-The rows for `HC-*`, `LAYOUT-001/007`, `EDGE-007/021` and `AP-*` correspond to
-entries in `Sequent.Layout.Rules.ruleRegistry`, which carries a detector per
-rule; `sequent rules` prints it. Tests named `test_<RULE>_*` live in
+The rows for `HC-*`, `LAYOUT-001/007/035`, `EDGE-007/021`, `ART-005` and `AP-*`
+correspond to entries in `Sequent.Layout.Rules.ruleRegistry`, which carries a
+detector per rule; `sequent rules` prints it. Tests named `test_<RULE>_*` live in
 `test/Sequent/SpecRuleSpec.hs`.
 
 ## §B — base geometry
@@ -80,6 +80,7 @@ rule; `sequent rules` prints it. Tests named `test_<RULE>_*` live in
 | LAYOUT-032 gateway chains | `Layout.Geometry.columnsFor` | `test_LAYOUT_032_adjacent_gateways_use_the_compact_gap` | complete |
 | LAYOUT-033 unstructured residue | `Layout.Regions` (irreducible SCCs), `Layout.Bands.resolveBandCollisions` | `LAYOUT-033` advisory | partial — irreducible loops are isolated and laid out by the local fallback; the fallback is a monotone band spread rather than a full Sugiyama pass |
 | LAYOUT-034 multiple components | `Layout.Bands.separateComponents` | corpus invariants | complete |
+| LAYOUT-035 event subprocess placement | `Layout.relocateHandlers`, `Layout.Geometry.columnsFor` (no column width), `Layout.Regions.detectRegions` (not on the spine), detector in `Layout.Validate` | `test_LAYOUT_035_an_event_subprocess_is_stacked_below_the_flow`, `test_LAYOUT_035_two_handlers_stack_in_canonical_order`, `test_LAYOUT_035_an_event_subprocess_claims_no_column_width`, `test_LAYOUT_035_a_handler_stays_inside_its_lane`, `test_LAYOUT_035_a_handler_in_an_upper_lane_stays_in_it`, `test_LAYOUT_006_an_event_subprocess_is_not_on_the_spine` | complete |
 
 ## §E — connector routing
 
@@ -143,8 +144,8 @@ rule; `sequent rules` prints it. Tests named `test_<RULE>_*` live in
 | Rule | Implementation | Tests | Status |
 |---|---|---|---|
 | LANE-001 pool geometry | `Layout.stackPools` | `test_LANE_012_*` | complete |
-| LANE-002 lane tiling | `Layout.Geometry.laneTopsOf` | `test_HC_007_*` | complete |
-| LANE-003 lane height | `Layout.Geometry.laneHeightOf` | `test_LANE_003_lane_height_follows_content` | complete |
+| LANE-002 lane tiling | `Layout.Geometry.laneTopsOf`, `Layout.Collision.growContainers` (shared width) | `test_HC_007_*`, `test_LANE_002_lanes_share_one_width_wide_enough_for_all_of_them` | complete |
+| LANE-003 lane height | `Layout.Geometry.laneHeightOf`, `Layout.Collision.growContainers` (`reach`) | `test_LANE_003_lane_height_follows_content`, `test_LANE_003_a_lane_reaches_below_its_lowest_member` | complete |
 | LANE-004 growth propagation | `Layout.Collision.growContainers` (re-tiling), `Layout.Geometry.columnsFor` (horizontal inset), `Layout.placeAllLabels` (`within`) | `test_HC_007_*`, `test_LANE_004_a_lane_insets_its_content_from_its_own_border` | complete — including the horizontal inset: the column grid starts at the lane's left border plus `CONTAINER_PAD_X`, and a node's caption is kept inside its own lane |
 | LANE-005 lane ordering | `Language.Resolve.buildLanes` | `keeps lane order as written` | complete |
 | LANE-006 lane spine | `Layout.Geometry.laneAxes` | `test_LANE_006_each_lane_has_its_own_spine` | complete |
@@ -178,7 +179,7 @@ rule; `sequent rules` prints it. Tests named `test_<RULE>_*` live in
 | ART-002 multiple artifacts | `Layout.placeArtifacts` | `artifacts` corpus entry | complete |
 | ART-003 association routing | `Layout.placeArtifacts` | `test_ART_003_association_is_a_zero_bend_vertical` | complete |
 | ART-004 artifacts must not dominate | — | — | not implemented — a scoring term only, with no repair; omitted rather than reported without a remedy |
-| ART-005 groups | — | — | not implemented — the DSL has no group construct |
+| ART-005 groups | `Layout.placeArtifacts` (`groupRects`), detector in `Layout.Validate` | `test_ART_005_a_group_is_its_members_bounding_box_plus_padding`, `test_ART_005_a_group_does_not_move_a_node` | complete |
 | ART-006 text annotations | `Layout.placeArtifacts` (gutter choice) | `artifacts` corpus entry | complete |
 | ART-007 artifact–corridor precedence | `Layout.Bands.branchExtent` (gutters before corridors) | `artifacts` corpus entry | complete |
 

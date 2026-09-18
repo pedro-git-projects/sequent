@@ -205,8 +205,8 @@ import continues without it:
 
 ```
 $ cabal run sequent -- import odd.bpmn
-warning[semantic]: a BPMN group 'Group_1' has no equivalent in this language and was skipped
-  = help: the language has no group construct
+warning[semantic]: a 'transaction' 'Activity_tx' has no equivalent in this language and was skipped
+  = help: there is no syntax for it; keep it in a separate file, or model it another way
 warning[semantic]: a data store reference 'Store_1' has no equivalent in this language and was skipped
   = help: the language has no data-store construct
 process x {
@@ -214,10 +214,15 @@ process x {
 }
 ```
 
-Geometry is not read at all. `<bpmndi:BPMNDiagram>` is skipped on the way in and
-computed again on the way out, so `import` of a hand-arranged file followed by
-`build` gives you the same process under this compiler's layout rules. That is
-the intended use, not a limitation of the reader.
+Geometry is read for exactly one thing, and thrown away again. `<bpmndi:BPMNDiagram>`
+is skipped on the way in and computed again on the way out, so `import` of a
+hand-arranged file followed by `build` gives you the same process under this
+compiler's layout rules. That is the intended use, not a limitation of the
+reader. The exception is a **group**: BPMN records a group as a rectangle and
+has no membership relation, so which elements a group holds is whatever its
+rectangle encloses. The reader recovers the members from the drawing, writes
+them as a `group` block, and discards the rectangle for ART-005 to compute
+again.
 
 **Ids survive only when they are names.** An id this compiler allocated carries
 its symbol — `Activity_charge` imports as `charge` and compiles back to
