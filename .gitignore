@@ -9,3 +9,8 @@ examples/murex.bpmn
 dist/pre-alpha/
 dist/releases/*.zip
 dist/releases/*.zip.sha256
+
+# IntelliJ plugin build output.
+editors/intellij/build/
+editors/intellij/.gradle/
+editors/intellij/.intellijPlatform/

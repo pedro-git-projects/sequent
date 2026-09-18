@@ -81,6 +81,19 @@ public final class SequentColorSettingsPage implements ColorSettingsPage {
                   on charge catch error payment_failed as charge_failed "Payment failed" {
                     end payment_aborted "Order abandoned" { terminate }
                   }
+
+                  handler cancelled "Customer cancelled" {
+                    start notice "Cancellation received" {
+                      message order_cancelled
+                      noninterrupting
+                    }
+                    user confirm "Confirm the cancellation"
+                    stop
+                  }
+
+                  group money "Money moves" {
+                    charge
+                  }
                 }
 
                 collaboration orders "Orders" {

@@ -8,7 +8,7 @@ IDEs. Targets 2025.2 (build 252) and later.
 * **Highlighting.** Five keyword groups — declarations (`process`, `pool`,
   `message`), node kinds (`service`, `user`, `wait`), gateway kinds (`xor`,
   `and`, `event`), step properties (`type`, `retries`, `input`) and control
-  words (`on`, `catch`, `goto`) — plus identifiers, numbers, labels, comments,
+  words (`on`, `catch`, `goto`, `stop`) — plus identifiers, numbers, labels, comments,
   braces and the `=`, `->`, `~>` operators.
 * **FEEL expressions read apart from labels.** A string starting with `=` is an
   expression, not presentation text, so `"=order.total"` is coloured
