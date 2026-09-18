@@ -43,9 +43,12 @@ module Sequent.Bpmn.Semantic
   , TimerDef (..)
   , Activity (..)
   , ActivityKind (..)
+  , SubprocessKind (..)
   , TaskType (..)
   , GatewayKind (..)
   , BoundaryAttachment (..)
+  , Interrupting (..)
+  , isInterrupting
     -- * Connections
   , SequenceFlow (..)
   , FlowCondition (..)
@@ -66,6 +69,7 @@ module Sequent.Bpmn.Semantic
   , emptyProvenance
   , spanOfNode
   , spanOfFlow
+  , stoppedExplicitly
     -- * Queries
   , scopeNodeMap
   , scopeFlowMap
@@ -78,6 +82,8 @@ module Sequent.Bpmn.Semantic
   , boundaryHost
   , isStartEvent
   , isEndEvent
+  , isEventSubprocess
+  , subprocessScope
   , isTerminating
   , gatewayKindOf
   , outgoingOf
@@ -85,11 +91,15 @@ module Sequent.Bpmn.Semantic
   , defaultFlowOf
   , nodeSizeHint
   , canonicalise
+  , assignOrphanLanes
   ) where
 
-import Data.List (sortOn)
+import Data.List (foldl', sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (mapMaybe)
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Text (Text)
 
 import Sequent.Camunda.Model (ExecutionMeta, FeelExpr, LoopSpec)
@@ -227,7 +237,10 @@ data EventSpec = EventSpec
   deriving (Eq, Show)
 
 data EventFlavour
-  = EvStart
+  = EvStart Interrupting
+  -- ^ The flag is BPMN's @isInterrupting@, and it is only ever
+  -- 'NonInterrupting' on the start event of an event subprocess: a plain
+  -- process start has nothing to interrupt.
   | EvEnd
   | EvIntermediateCatch
   | EvIntermediateThrow
@@ -237,9 +250,21 @@ data EventFlavour
 -- | Which activity a boundary event hangs on, and whether it interrupts it.
 data BoundaryAttachment = BoundaryAttachment
   { baHost        :: NodeId
-  , baInterrupting :: Bool
+  , baInterrupting :: Interrupting
   }
   deriving (Eq, Show)
+
+-- | Whether catching the trigger cancels what the event is attached to.
+--
+-- One type for the two places BPMN spells the same question differently —
+-- @cancelActivity@ on a boundary event, @isInterrupting@ on an event
+-- subprocess's start event. A 'Bool' would have read as whichever of the two
+-- the reader happened to have in mind.
+data Interrupting = Interrupting | NonInterrupting
+  deriving (Eq, Ord, Show)
+
+isInterrupting :: Interrupting -> Bool
+isInterrupting = (== Interrupting)
 
 data EventDefinition
   = EdMessage NodeId
@@ -267,11 +292,26 @@ data Activity = Activity
 
 data ActivityKind
   = AkTask TaskType
-  | AkSubprocess Scope
+  | AkSubprocess SubprocessKind Scope
   -- ^ An expanded subprocess. Its scope is laid out by a recursive invocation
   -- of the whole formatter (LAYOUT-019).
   | AkCallActivity
   deriving (Eq, Show)
+
+-- | Whether a subprocess is reached by a sequence flow or by an event.
+--
+-- The two are one BPMN element with one attribute between them, and they are
+-- one constructor here for the same reason: every phase that sizes, nests or
+-- serialises a subprocess treats them alike, and the handful that must not —
+-- layering, which may not give an event subprocess a layer, and validation,
+-- which requires it to have a triggered start event — say so explicitly rather
+-- than by matching a constructor they might forget.
+data SubprocessKind
+  = SpEmbedded
+  | SpEventSub
+  -- ^ BPMN's @triggeredByEvent="true"@. It has no incoming and no outgoing
+  -- sequence flow: it runs when its start event fires (LAYOUT-035).
+  deriving (Eq, Ord, Show)
 
 data TaskType
   = TtAbstract
@@ -355,6 +395,11 @@ data Artifact = Artifact
   , artText     :: Maybe Text
   , artDocOrder :: !Int
   , artLane     :: Maybe LaneId
+  , artMembers  :: [NodeId]
+  -- ^ The members of an 'AkGroup', in document order; empty for every other
+  -- kind. BPMN records this relation nowhere — a group is a rectangle, and
+  -- membership is whatever it happens to enclose — so it is carried here and
+  -- ART-005 derives the rectangle from it rather than the other way round.
   }
   deriving (Eq, Show)
 
@@ -362,6 +407,7 @@ data ArtifactKind
   = AkDataObject
   | AkDataStore
   | AkTextAnnotation
+  | AkGroup
   deriving (Eq, Ord, Show)
 
 -- Root elements -------------------------------------------------------------
@@ -405,11 +451,23 @@ data EscalationDef = EscalationDef
 data Provenance = Provenance
   { provNodes :: Map NodeId Span
   , provFlows :: Map FlowId Span
+  , provStops :: Set NodeId
+  -- ^ The steps a @stop@ ended on purpose.
+  --
+  -- This belongs here and not in the graph for the same reason a span does:
+  -- @stop@ writes no BPMN element, so two processes that differ only in
+  -- whether the author acknowledged a dangling path are the same process, and
+  -- the determinism tests rely on them comparing equal. What it is for is
+  -- tone — a path that stops short of an end event is worth mentioning, and
+  -- worth mentioning differently to someone who has already said they meant it.
   }
   deriving (Eq, Show)
 
 emptyProvenance :: Provenance
-emptyProvenance = Provenance Map.empty Map.empty
+emptyProvenance = Provenance Map.empty Map.empty Set.empty
+
+stoppedExplicitly :: Provenance -> NodeId -> Bool
+stoppedExplicitly p i = Set.member i (provStops p)
 
 spanOfNode :: Provenance -> NodeId -> Maybe Span
 spanOfNode p i = Map.lookup i (provNodes p)
@@ -434,7 +492,7 @@ childScopes :: Scope -> [Scope]
 childScopes s =
   [ inner
   | n <- scNodes s
-  , NkActivity (Activity {acKind = AkSubprocess inner}) <- [fnKind n]
+  , NkActivity (Activity {acKind = AkSubprocess _ inner}) <- [fnKind n]
   ]
 
 nodeIsGateway :: FlowNode -> Bool
@@ -464,8 +522,21 @@ boundaryHost n = case fnKind n of
 
 isStartEvent :: FlowNode -> Bool
 isStartEvent n = case fnKind n of
-  NkEvent (EventSpec EvStart _) -> True
+  NkEvent (EventSpec (EvStart _) _) -> True
   _ -> False
+
+-- | An event subprocess: a container with no sequence flow in or out, which is
+-- what every phase that walks the flow graph has to know about it.
+isEventSubprocess :: FlowNode -> Bool
+isEventSubprocess n = case fnKind n of
+  NkActivity (Activity (AkSubprocess SpEventSub _) _) -> True
+  _ -> False
+
+-- | The inner scope of a subprocess of either kind.
+subprocessScope :: FlowNode -> Maybe Scope
+subprocessScope n = case fnKind n of
+  NkActivity (Activity (AkSubprocess _ inner) _) -> Just inner
+  _ -> Nothing
 
 isEndEvent :: FlowNode -> Bool
 isEndEvent n = case fnKind n of
@@ -505,8 +576,49 @@ nodeSizeHint n = case fnKind n of
   NkEvent _ -> (36, 36)
   NkGateway _ -> (50, 50)
   NkActivity a -> case acKind a of
-    AkSubprocess _ -> (240, 160)
+    AkSubprocess _ _ -> (240, 160)
     _ -> (100, 80)
+
+-- | SPEC §I.2 "Node in no lane": give it the lane of its highest-ranked
+-- predecessor, else the first lane.
+--
+-- A graph property rather than a resolution step, which is why it lives here
+-- and not in the resolver that used to own it: /both/ directions have to apply
+-- it or they cannot agree. A @.bpmn@ may leave a node out of every
+-- @flowNodeRef@ — a modeller does it routinely for an event subprocess — and
+-- an importer that kept the gap would produce a graph the source it writes can
+-- never reproduce, because compiling that source fills the gap in.
+assignOrphanLanes :: BpmnProcess -> BpmnProcess
+assignOrphanLanes p = case procLanes p of
+  [] -> p
+  (l0 : _) -> p {procScope = fixScope (laneId l0) (procScope p)}
+  where
+    -- @fallback@ is the lane to use when nothing else says: the first lane at
+    -- the top level, and the container's own lane inside a subprocess. A
+    -- subprocess is drawn inside a lane, so everything drawn inside /it/ is in
+    -- that lane too — which is what the resolver produces, and BPMN has no way
+    -- to say otherwise: @flowNodeRef@ lists a process's own flow nodes, never a
+    -- subprocess's.
+    fixScope fallback sc = sc {scNodes = reverse (fst (foldl' step ([], Map.empty) (scNodes sc)))}
+      where
+        preds = Map.fromListWith (++) [(sfTarget f, [sfSource f]) | f <- scFlows sc]
+        hosts = Map.fromList [(fnId n, baHost a) | n <- scNodes sc, Just a <- [boundaryHost n]]
+        step (acc, seen) n =
+          let l = case fnLane n of
+                Just x -> x
+                Nothing ->
+                  let sources = case Map.lookup (fnId n) hosts of
+                        Just h -> [h]
+                        Nothing -> Map.findWithDefault [] (fnId n) preds
+                   in case mapMaybe (`Map.lookup` seen) sources of
+                        (x : _) -> x
+                        [] -> fallback
+           in (descend l n {fnLane = Just l} : acc, Map.insert (fnId n) l seen)
+
+        descend l n = case fnKind n of
+          NkActivity a@Activity {acKind = AkSubprocess k inner} ->
+            n {fnKind = NkActivity a {acKind = AkSubprocess k (fixScope l inner)}}
+          _ -> n
 
 -- | Sort every collection by the canonical key @(documentOrder, id)@
 -- (LAYOUT-027 rule 1). Applied once, before any traversal; afterwards list
@@ -540,6 +652,6 @@ canonicalise g =
         , scAssociations = sortOn (\a -> (asDocOrder a, unFlowId (asId a))) (scAssociations s)
         }
     canonNode n = case fnKind n of
-      NkActivity a@Activity {acKind = AkSubprocess inner} ->
-        n {fnKind = NkActivity a {acKind = AkSubprocess (canonScope inner)}}
+      NkActivity a@Activity {acKind = AkSubprocess k inner} ->
+        n {fnKind = NkActivity a {acKind = AkSubprocess k (canonScope inner)}}
       _ -> n

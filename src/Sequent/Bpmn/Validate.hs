@@ -39,7 +39,35 @@ processDiags :: Provenance -> BpmnProcess -> [Diagnostic]
 processDiags prov p =
   rootScopeDiags prov (procName p) (procScope p)
     ++ concatMap (scopeDiags prov) (allScopes (procScope p))
-    ++ concatMap (subprocessDiags prov) (drop 1 (allScopes (procScope p)))
+    ++ concatMap (subprocessDiags prov) (subprocesses (procScope p))
+    ++ concatMap (startDiags prov) (scopesTagged (procScope p))
+
+-- | Every subprocess reachable from a scope, with the kind it was declared as
+-- and the node that owns it. 'allScopes' loses both, and both decide which
+-- rules apply.
+subprocesses :: Scope -> [(SubprocessKind, NodeId, Scope)]
+subprocesses sc =
+  [ (k, fnId n, inner)
+  | s <- allScopes sc
+  , n <- scNodes s
+  , NkActivity (Activity (AkSubprocess k inner) _) <- [fnKind n]
+  ]
+
+-- | Every scope, paired with whether it is the body of an event subprocess.
+--
+-- That one bit decides which start events are legal: an error start, a
+-- compensation start and a non-interrupting start are meaningful only where
+-- there is an enclosing scope for them to interrupt.
+scopesTagged :: Scope -> [(Bool, Scope)]
+scopesTagged = go False
+  where
+    go ev sc =
+      (ev, sc)
+        : concat
+          [ go (k == SpEventSub) inner
+          | n <- scNodes sc
+          , NkActivity (Activity (AkSubprocess k inner) _) <- [fnKind n]
+          ]
 
 -- | The outermost scope of a process must be startable.
 rootScopeDiags :: Provenance -> Maybe Text -> Scope -> [Diagnostic]
@@ -58,23 +86,85 @@ rootScopeDiags _ nm sc
 -- | An expanded subprocess is a scope in its own right: BPMN requires it to be
 -- enterable and leavable, and a subprocess whose token can never leave hangs
 -- the parent instance.
-subprocessDiags :: Provenance -> Scope -> [Diagnostic]
-subprocessDiags prov sc = case scId sc of
-  ScopeProcess _ -> []
-  ScopeSubprocess owner ->
-    let starts = filter isStartEvent (scNodes sc)
-        ends = filter isEndEvent (scNodes sc)
-        at = spanOfNode prov owner
-        d sev msg hint = maybe id (\s x -> x {diagSpan = Just s}) at (withHint hint (diagnostic sev SemanticError msg))
-     in [ d Error "a subprocess needs exactly one start event" "add: start began"
-        | null starts
+subprocessDiags :: Provenance -> (SubprocessKind, NodeId, Scope) -> [Diagnostic]
+subprocessDiags prov (kind, owner, sc) =
+  [ d Error (what <> " needs exactly one start event") startHint
+  | null starts
+  ]
+    ++ [ d Error (what <> " has more than one start event") multiHint
+       | length starts > 1
+       ]
+    ++ [ d Error (what <> " needs at least one end event") "add: end finished"
+       | null ends
+       ]
+  where
+    starts = filter isStartEvent (scNodes sc)
+    ends = filter isEndEvent (scNodes sc)
+    at = spanOfNode prov owner
+    d sev msg hint = maybe id (\s x -> x {diagSpan = Just s}) at (withHint hint (diagnostic sev SemanticError msg))
+
+    what = case kind of
+      SpEmbedded -> "a subprocess"
+      SpEventSub -> "an event subprocess"
+    startHint = case kind of
+      SpEmbedded -> "add: start began"
+      SpEventSub -> "add the event that starts it: start caught { error payment_failed }"
+    multiHint = case kind of
+      SpEmbedded -> "BPMN allows only one none-start event inside an embedded subprocess"
+      SpEventSub -> "an event subprocess is started by one event; write a second handler for a second trigger"
+
+-- | Which start events belong where.
+--
+-- Every rule here is the same rule seen from two sides: @isInterrupting@, an
+-- error trigger and a compensation trigger all describe a start event's
+-- relationship to a scope /around/ it, and only an event subprocess has one.
+startDiags :: Provenance -> (Bool, Scope) -> [Diagnostic]
+startDiags prov (inHandler, sc) = concatMap one (scNodes sc)
+  where
+    at i = spanOfNode prov i
+    d sev i msg hint = maybe id (\s x -> x {diagSpan = Just s}) (at i) (withHint hint (diagnostic sev SemanticError msg))
+    named n = quoted (fromMaybe (unNodeId (fnId n)) (fnName n))
+
+    one n = case fnKind n of
+      NkEvent (EventSpec (EvStart i) def) ->
+        [ d
+            Error
+            (fnId n)
+            (named n <> " catches " <> triggerWord t <> ", which only the start of an event subprocess can do")
+            "put it in a handler block, or hang a boundary event on the step that fails"
+        | not inHandler
+        , Just t <- [def]
+        , scopedTrigger t
         ]
-          ++ [ d Error "a subprocess has more than one start event" "BPMN allows only one none-start event inside an embedded subprocess"
-             | length starts > 1
+          ++ [ d
+                 Error
+                 (fnId n)
+                 (named n <> " is non-interrupting, and there is no enclosing scope for it to leave running")
+                 "'noninterrupting' belongs on the start event of a handler block"
+             | not inHandler
+             , not (isInterrupting i)
              ]
-          ++ [ d Error "a subprocess needs at least one end event" "add: end finished"
-             | null ends
+          ++ [ d
+                 Error
+                 (fnId n)
+                 (named n <> " starts an event subprocess but waits for nothing")
+                 "an event subprocess runs when its trigger fires: start caught { error payment_failed }"
+             | inHandler
+             , def == Nothing
              ]
+      _ -> []
+
+    -- The triggers that only mean something with a scope around them.
+    scopedTrigger t = case t of
+      EdError _ -> True
+      EdCompensation -> True
+      _ -> False
+
+    triggerWord t = case t of
+      EdError _ -> "an error"
+      EdCompensation -> "a compensation"
+      _ -> "that"
+
 
 -- | Everything that is checkable from one scope's flow graph.
 scopeDiags :: Provenance -> Scope -> [Diagnostic]
@@ -87,6 +177,7 @@ scopeDiags prov sc =
     , sinkDiags
     , gatewayDiags
     , boundaryDiags
+    , groupDiags
     ]
   where
     nodes = scNodes sc
@@ -142,20 +233,41 @@ scopeDiags prov sc =
           (err (fnId n) (named n <> " is not reachable from any start event"))
       | n <- nodes
       , not (isStartEvent n)
+      , not (isEventSubprocess n)
       , Just v <- [vtxOf fg (fnId n)]
       , let host = fromMaybe v (IM.lookup v (fgLift fg))
       , not (IS.member host reachable)
       ]
 
+    -- An event subprocess is on no path by construction, so neither rule
+    -- applies to it: it is started by its own event and it hands nothing back.
+    -- A path that stops short of an end event is worth mentioning once. If the
+    -- author wrote @stop@ they have already been told and have answered, so it
+    -- drops to an advisory that says what the engine will do rather than
+    -- repeating the suggestion they declined.
     sinkDiags =
-      [ withHint
-          "end the path explicitly: end done \"Done\""
-          (warn (fnId n) (named n <> " has no outgoing flow and is not an end event"))
+      [ if stoppedExplicitly prov (fnId n)
+          then
+            withHint
+              "the instance ends when every path has run out; nothing else happens here"
+              (adv (fnId n) (named n <> " ends its path without an end event, as written"))
+          else
+            withHint
+              "end the path explicitly, or write 'stop' if it really leads nowhere"
+              (warn (fnId n) (named n <> " has no outgoing flow and is not an end event"))
       | n <- nodes
       , not (isEndEvent n)
       , not (nodeIsBoundary n)
+      , not (isEventSubprocess n)
       , null (outgoingOf sc (fnId n))
       ]
+      ++ [ withHint
+             "an event subprocess runs when its trigger fires, not when something flows into it"
+             (err (fnId n) (named n <> " is an event subprocess and cannot be connected by a sequence flow"))
+         | n <- nodes
+         , isEventSubprocess n
+         , not (null (outgoingOf sc (fnId n))) || not (null (incomingOf sc (fnId n)))
+         ]
 
     gatewayDiags = concatMap one nodes
       where
@@ -233,6 +345,29 @@ scopeDiags prov sc =
       | n <- nodes
       , Just att <- [boundaryHost n]
       , not (Map.member (baHost att) byId)
+      ]
+
+    -- A group is a rectangle drawn round its members (ART-005), and a
+    -- rectangle cannot be drawn round steps in two different scopes: one of
+    -- them is inside a subprocess, in its own coordinate frame. Names resolve
+    -- across the whole process, so this is checkable only here.
+    groupDiags =
+      [ withSpan
+          (spanOfNode prov m)
+          ( withHint
+              "a group holds steps from one scope; declare a second group inside the subprocess"
+              ( diagnostic
+                  Error
+                  SemanticError
+                  ( "group " <> quoted (fromMaybe (unArtifactId (artId a)) (artName a))
+                      <> " has a member outside its scope: " <> quoted (unNodeId m)
+                  )
+              )
+          )
+      | a <- scArtifacts sc
+      , artKind a == AkGroup
+      , m <- artMembers a
+      , not (Map.member m byId)
       ]
 
 -- Collaboration --------------------------------------------------------------

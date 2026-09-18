@@ -25,12 +25,80 @@ spec = do
             && ("Activity_a", "Gateway_g_join") `elem` fs
             && ("Gateway_g_join", "Event_e") `elem` fs
 
+    it "stops a path without connecting it to the next step" $
+      -- The whole reason 'stop' exists: without it the two branches both
+      -- reach the end of the block, which is what the resolver derives a merge
+      -- from, and the second path is joined to the first.
+      flowPairs "start s\nxor g { branch \"y\" when \"=y\" { task a\nstop } branch \"n\" otherwise { task b\nstop } }"
+        `shouldBe` [("StartEvent_s", "Gateway_g"), ("Gateway_g", "Activity_a"), ("Gateway_g", "Activity_b")]
+
+    it "creates no merge when both branches stop" $
+      nodeIds "start s\nxor g { branch \"y\" when \"=y\" { task a\nstop } branch \"n\" otherwise { task b\nstop } }"
+        `shouldNotContain` ["Gateway_g_join"]
+
+    it "says so when a 'stop' ends nothing" $
+      messagesOf (diagsOf "start s\nend e\nstop") `shouldSatisfy` any (isInfixOf "ends nothing")
+
+  describe "event subprocesses" $ do
+    let handler body = "error e \"E\"\nmessage m \"w\"\nprocess p { start s\ntask t\nend fin\n" <> body <> " }"
+
+    it "builds a handler as a subprocess nothing flows into" $
+      flowPairs (handler "handler h { start c { error e }\ntask u\nend f }")
+        `shouldBe` [("StartEvent_s", "Activity_t"), ("Activity_t", "Event_fin")]
+
+    it "leaves the steps around it connected to each other" $
+      -- A handler written between two steps must not break the chain: it is
+      -- not on the chain.
+      flowPairs (handler "handler h { start c { error e }\nend f }")
+        `shouldSatisfy` elem ("Activity_t", "Event_fin")
+
+    it "is not reported as unreachable" $
+      -- It is reachable, by its trigger. Reporting it would make every handler
+      -- an error.
+      messagesOf (errorsOf' (handler "handler h { start c { error e }\ntask u\nend f }")) `shouldBe` []
+
+    it "requires its start event to wait for something" $
+      messagesOf (errorsOf' (handler "handler h { start c\ntask u\nend f }"))
+        `shouldSatisfy` any (isInfixOf "waits for nothing")
+
+    it "rejects an error start event outside one" $
+      messagesOf (errorsOf' "error e \"E\"\nprocess p { start s { error e }\nend fin }")
+        `shouldSatisfy` any (isInfixOf "only the start of an event subprocess")
+
+    it "rejects 'noninterrupting' outside one" $
+      messagesOf (errorsOf' "message m \"w\"\nprocess p { start s { message m\nnoninterrupting }\nend fin }")
+        `shouldSatisfy` any (isInfixOf "no enclosing scope")
+
+    it "refuses a boundary event on one" $
+      messagesOf (errorsOf' (handler "handler h { start c { error e }\nend f }\non h catch timer \"PT1M\" as late { end l }"))
+        `shouldSatisfy` any (isInfixOf "an event subprocess")
+
+  describe "groups" $ do
+    it "records its members and makes no association" $
+      let sc = scopeOf "start s\ntask a\ntask b\nend e\ngroup g \"G\" { a b }"
+       in ( [map unNodeId (artMembers x) | x <- scArtifacts sc, artKind x == AkGroup]
+          , length (scAssociations sc)
+          )
+            `shouldBe` ([["Activity_a", "Activity_b"]], 0)
+
+    it "rejects a member in another scope" $
+      messagesOf (errorsOf' "start s\nsubprocess sub { start i\ntask inner\nend o }\nend e\ngroup g { inner }")
+        `shouldSatisfy` any (isInfixOf "outside its scope")
+
+    it "rejects a member that is not a step" $
+      messagesOf (errorsOf' "start s\ntask a\nend e\nnote n \"hi\" on a\ngroup g { n }")
+        `shouldSatisfy` any (isInfixOf "not a step")
+
+    it "warns when it holds nothing" $
+      messagesOf (diagsOf "start s\ntask a\nend e\ngroup g { }")
+        `shouldSatisfy` any (isInfixOf "has no members")
+
     it "creates no merge when only one branch continues" $
-      nodeIds "start s\nxor g { branch \"y\" otherwise { task a } branch \"n\" when \"=n\" { end stop } }\nend e"
+      nodeIds "start s\nxor g { branch \"y\" otherwise { task a } branch \"n\" when \"=n\" { end halt } }\nend e"
         `shouldNotContain` ["Gateway_g_join"]
 
     it "creates the merge anyway when the author names the join" $
-      nodeIds "start s\nxor g join later { branch \"y\" otherwise { task a } branch \"n\" when \"=n\" { end stop } }\nend e"
+      nodeIds "start s\nxor g join later { branch \"y\" otherwise { task a } branch \"n\" when \"=n\" { end halt } }\nend e"
         `shouldContain` ["Gateway_later"]
 
     it "routes goto back to an earlier step" $

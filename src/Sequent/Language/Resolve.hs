@@ -25,10 +25,11 @@ module Sequent.Language.Resolve
   ) where
 
 import Control.Monad (forM, forM_, unless, when)
-import Data.List (foldl', sortOn)
+import Data.List (sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust, mapMaybe)
+import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -66,7 +67,7 @@ resolveFile (SFile decls) =
    in ResolveResult
         { rrGraph = if hasErrors ds then Nothing else Just (canonicalise graph)
         , rrPins = PinSet (rsPins st)
-        , rrProvenance = Provenance (rsNodeSpans st) (rsFlowSpans st)
+        , rrProvenance = Provenance (rsNodeSpans st) (rsFlowSpans st) (rsStops st)
         , rrDiags = ds
         }
 
@@ -79,6 +80,7 @@ data RState = RState
   , rsPins  :: Map NodeId (Int, Int)
   , rsNodeSpans :: Map NodeId Span
   , rsFlowSpans :: Map FlowId Span
+  , rsStops :: Set NodeId
   }
 
 newtype R a = R {unR :: RState -> (a, RState)}
@@ -94,7 +96,7 @@ instance Monad R where
   R g >>= k = R (\s -> let (a, s') = g s in unR (k a) s')
 
 runR :: R a -> (a, RState)
-runR (R f) = f (RState (reserve "Definitions_1" emptyPool) [] 0 Map.empty Map.empty Map.empty)
+runR (R f) = f (RState (reserve "Definitions_1" emptyPool) [] 0 Map.empty Map.empty Map.empty Set.empty)
 
 emit :: Diagnostic -> R ()
 emit d = R (\s -> ((), s {rsDiags = d : rsDiags s}))
@@ -116,6 +118,9 @@ addPin i xy = R (\s -> ((), s {rsPins = Map.insert i xy (rsPins s)}))
 
 noteNodeSpan :: NodeId -> Span -> R ()
 noteNodeSpan i sp = R (\s -> ((), s {rsNodeSpans = Map.insert i sp (rsNodeSpans s)}))
+
+noteStop :: NodeId -> R ()
+noteStop i = R (\s -> ((), s {rsStops = Set.insert i (rsStops s)}))
 
 noteFlowSpan :: FlowId -> Span -> R ()
 noteFlowSpan i sp = R (\s -> ((), s {rsFlowSpans = Map.insert i sp (rsFlowSpans s)}))
@@ -144,6 +149,7 @@ data SymKind
   = SkEvent NodeKw
   | SkTask NodeKw
   | SkSubprocess
+  | SkEventSub
   | SkGatewaySplit GwKw
   | SkGatewayJoin GwKw
   | SkBoundary
@@ -360,9 +366,9 @@ data Decl = Decl
 data DeclKind
   = DkNode SymKind
   | DkLane
-  | -- | 'True' for a text annotation, 'False' for a data object. The two get
-    -- different id prefixes, so the distinction has to survive to allocation.
-    DkArtifact Bool
+  | -- | Which artifact, as its id class: a note, a data object and a group get
+    -- different prefixes, so the distinction has to survive to allocation.
+    DkArtifact IdClass
   deriving (Eq, Show)
 
 collectDeclarations :: [SItem] -> [Decl]
@@ -372,9 +378,12 @@ collectDeclarations = concatMap one
       IStep s -> step s
       IBoundary b ->
         Decl (bdAs b) (DkNode SkBoundary) (bdLabel b) : collectDeclarations (bdBody b)
+      IHandler h ->
+        Decl (shName h) (DkNode SkEventSub) (shLabel h) : collectDeclarations (shBody h)
       ILane l -> Decl (slName l) DkLane (slLabel l) : collectDeclarations (slBody l)
-      INote n -> [Decl (snoName n) (DkArtifact True) Nothing]
-      IData d -> [Decl (sdName d) (DkArtifact False) (sdLabel d)]
+      INote n -> [Decl (snoName n) (DkArtifact IcTextAnnotation) Nothing]
+      IData d -> [Decl (sdName d) (DkArtifact IcDataObjectRef) (sdLabel d)]
+      IGroup g -> [Decl (sgrName g) (DkArtifact IcGroup) (sgrLabel g)]
       _ -> []
 
     step s = case s of
@@ -382,6 +391,7 @@ collectDeclarations = concatMap one
       StSubprocess sub ->
         Decl (ssName sub) (DkNode SkSubprocess) (ssLabel sub) : collectDeclarations (ssBody sub)
       StGoto _ _ -> []
+      StStop _ -> []
       StGateway g ->
         Decl (sgName g) (DkNode (SkGatewaySplit (unLoc (sgKind g)))) (sgLabel g)
           : [ Decl (joinName g) (DkNode (SkGatewayJoin (unLoc (sgKind g)))) Nothing
@@ -451,8 +461,7 @@ allocateSymbols declared = do
 classOf :: DeclKind -> Maybe IdClass
 classOf k = case k of
   DkLane -> Just IcLane
-  DkArtifact True -> Just IcTextAnnotation
-  DkArtifact False -> Just IcDataObjectRef
+  DkArtifact c -> Just c
   DkNode s -> Just (nodeClass s)
 
 nodeClass :: SymKind -> IdClass
@@ -464,6 +473,7 @@ nodeClass s = case s of
   SkGatewaySplit _ -> IcGateway
   SkGatewayJoin _ -> IcGateway
   SkSubprocess -> IcActivity
+  SkEventSub -> IcActivity
   SkTask _ -> IcActivity
 
 -- | LANE-005: input order is the lane order, and it is the order of first
@@ -482,29 +492,6 @@ buildLanes declared syms =
         go seen (d : ds)
           | Set.member (unLoc (dclName d)) seen = go seen ds
           | otherwise = d : go (Set.insert (unLoc (dclName d)) seen) ds
-
--- | SPEC §I.2 "Node in no lane": assign it to the lane of its highest-ranked
--- predecessor, else the first lane, and report. Done here so the semantic graph
--- is complete before layout rather than patched during it.
-assignOrphanLanes :: BpmnProcess -> BpmnProcess
-assignOrphanLanes p = case procLanes p of
-  [] -> p
-  (l0 : _) -> p {procScope = fixScope (laneId l0) (procScope p)}
-  where
-    fixScope firstLane sc = sc {scNodes = reverse (fst (foldl' step ([], Map.empty) (scNodes sc)))}
-      where
-        preds = Map.fromListWith (++) [(sfTarget f, [sfSource f]) | f <- scFlows sc]
-        hosts = Map.fromList [(fnId n, baHost a) | n <- scNodes sc, Just a <- [boundaryHost n]]
-        step (acc, seen) n = case fnLane n of
-          Just l -> (n : acc, Map.insert (fnId n) l seen)
-          Nothing ->
-            let sources = case Map.lookup (fnId n) hosts of
-                  Just h -> [h]
-                  Nothing -> Map.findWithDefault [] (fnId n) preds
-                l = case mapMaybe (`Map.lookup` seen) sources of
-                  (x : _) -> x
-                  [] -> firstLane
-             in (n {fnLane = Just l} : acc, Map.insert (fnId n) l seen)
 
 -- Scope building -------------------------------------------------------------
 
@@ -578,6 +565,16 @@ runBody roots syms lane = go
       IBoundary b -> do
         acc <- boundaryHandler roots syms lane b
         pure (acc, pend)
+      -- An event subprocess is reached by its trigger, never by a sequence
+      -- flow, so it neither consumes the pending ends nor leaves one: writing
+      -- it between two steps must leave those two steps connected to each
+      -- other.
+      IHandler h -> do
+        acc <- eventSubprocess roots syms lane h
+        pure (acc, pend)
+      IGroup g -> do
+        acc <- groupArtifact syms lane g
+        pure (acc, pend)
       INote n -> do
         acc <- noteArtifact syms lane n
         pure (acc, pend)
@@ -587,6 +584,18 @@ runBody roots syms lane = go
       IStep s -> stepItem pend s
 
     stepItem pend s = case s of
+      -- The path ends here and no element records it. Dropping the pending
+      -- ends is the whole of the semantics: nothing is connected to whatever
+      -- comes next.
+      StStop sp -> do
+        when (null pend) $
+          emit
+            ( withHint
+                "'stop' ends the path that leads into it; here nothing does"
+                (advisoryAt SemanticError sp "this 'stop' ends nothing")
+            )
+        mapM_ (noteStop . pdFrom) pend
+        pure (mempty, [])
       StGoto n _ -> do
         acc <- case Map.lookup (unLoc n) syms of
           Just (SymNode nid _) -> connectAll (stepSpan s) pend nid (unLoc n)
@@ -846,7 +855,7 @@ boundaryHandler roots syms lane b = do
               , fnDoc = Nothing
               , fnKind =
                   NkEvent
-                    (EventSpec (EvBoundary (BoundaryAttachment hid (not (bdNonInt b)))) trig)
+                    (EventSpec (EvBoundary (BoundaryAttachment hid (interruptingOf (bdNonInt b)))) trig)
               , fnLane = lane
               , fnDocOrder = o
               , fnExec = noExecution
@@ -861,11 +870,48 @@ boundaryHandler roots syms lane b = do
       pure (mempty {accNodes = [node]} <> acc)
     _ -> pure mempty
 
+-- | An event subprocess. Structurally a subprocess whose scope is built the
+-- same way; the difference is that nothing connects it to the rest of the
+-- process, which is why it is built here rather than in 'stepItem'.
+--
+-- Its own dangling ends are discarded rather than returned: they belong to the
+-- inner scope, and the enclosing chain never touched this node to begin with.
+eventSubprocess :: Roots -> Symbols -> Maybe LaneId -> SHandler -> R Acc
+eventSubprocess roots syms lane h = case Map.lookup (unLoc (shName h)) syms of
+  Just (SymNode nid _) -> do
+    o <- nextOrder
+    (inner, _) <- buildScope roots syms (ScopeSubprocess nid) lane (shBody h)
+    when (null (shBody h)) $
+      emit
+        ( withHint
+            "put the trigger and the steps in the block: handler h { start caught { error e } ... }"
+            (warnAt SemanticError (shSpan h) "event subprocess is empty")
+        )
+    pure
+      mempty
+        { accNodes =
+            [ FlowNode
+                { fnId = nid
+                , fnName = shLabel h
+                , fnDoc = firstDoc (shBody h)
+                , fnKind = NkActivity (Activity (AkSubprocess SpEventSub inner) Nothing)
+                , fnLane = lane
+                , fnDocOrder = o
+                , fnExec = noExecution
+                }
+            ]
+        }
+  _ -> pure mempty
+
+interruptingOf :: Bool -> Interrupting
+interruptingOf nonInterrupting = if nonInterrupting then NonInterrupting else Interrupting
+
 describeKind :: SymKind -> Text
 describeKind k = case k of
   SkEvent kw -> "the " <> nodeKeyword kw <> " event"
   SkTask kw -> "the " <> nodeKeyword kw <> " task"
   SkSubprocess -> "a subprocess"
+  SkEventSub -> "an event subprocess"
   SkGatewaySplit kw -> "the " <> gatewayKeyword kw <> " gateway"
   SkGatewayJoin kw -> "the merge of the " <> gatewayKeyword kw <> " gateway"
   SkBoundary -> "a boundary event"
@@ -880,11 +926,58 @@ noteArtifact syms lane n = case (Map.lookup (unLoc (snoName n)) syms, Map.lookup
     i <- freshId IcAssociation (allocFlowName (unLoc (snoName n)) (unLoc (snoOn n)))
     pure
       mempty
-        { accArts = [Artifact aid AkTextAnnotation Nothing (Just (snoText n)) o lane]
+        { accArts = [Artifact aid AkTextAnnotation Nothing (Just (snoText n)) o lane []]
         , accAssocs = [Association (FlowId i) (RefArtifact aid) (RefNode host) AdNone ao]
         }
   (_, Nothing) -> undefinedRef (snoOn n) >> pure mempty
   _ -> pure mempty
+
+-- | A group. Unlike a note or a data object it has no association: BPMN does
+-- not record which elements a group holds, so nothing is emitted to connect
+-- them and the membership lives in the artifact itself.
+--
+-- The lane is the one the group was written in, which is only a default; a
+-- group whose members span lanes is a layout question, not a name-resolution
+-- one, and ART-005 answers it from the members' geometry.
+groupArtifact :: Symbols -> Maybe LaneId -> SGroup -> R Acc
+groupArtifact syms lane g = case Map.lookup (unLoc (sgrName g)) syms of
+  Just (SymArtifact aid) -> do
+    o <- nextOrder
+    members <- fmap concat . forM (membersOf g) $ \m ->
+      case Map.lookup (unLoc m) syms of
+        Just (SymNode nid info)
+          | SkBoundary <- sniKind info -> do
+              failHint
+                SemanticError
+                (locSpan m)
+                ("'" <> unLoc m <> "' is a boundary event and cannot be grouped")
+                "a group holds the steps it is drawn around; a boundary event is drawn on its host"
+              pure []
+          | otherwise -> pure [nid]
+        Just _ -> do
+          failHint
+            SemanticError
+            (locSpan m)
+            ("'" <> unLoc m <> "' is not a step, so it cannot be a member of a group")
+            "a group holds steps; a lane groups them already, and an artifact is not one"
+          pure []
+        Nothing -> undefinedRef m >> pure []
+    when (null members) $
+      emit
+        ( withHint
+            "list the steps it holds: group money \"Payment\" { charge refund }"
+            (warnAt SemanticError (sgrSpan g) ("group '" <> unLoc (sgrName g) <> "' has no members"))
+        )
+    pure mempty {accArts = [Artifact aid AkGroup (sgrLabel g) Nothing o lane (dedupeIds members)]}
+  _ -> pure mempty
+
+dedupeIds :: [NodeId] -> [NodeId]
+dedupeIds = go Set.empty
+  where
+    go _ [] = []
+    go seen (x : xs)
+      | Set.member x seen = go seen xs
+      | otherwise = x : go (Set.insert x seen) xs
 
 dataArtifact :: Symbols -> Maybe LaneId -> SData -> R Acc
 dataArtifact syms lane d = case (Map.lookup (unLoc (sdName d)) syms, Map.lookup (unLoc (sdOn d)) syms) of
@@ -897,7 +990,7 @@ dataArtifact syms lane d = case (Map.lookup (unLoc (sdName d)) syms, Map.lookup 
           DataTo -> (RefArtifact aid, RefNode host)
     pure
       mempty
-        { accArts = [Artifact aid AkDataObject (sdLabel d) Nothing o lane]
+        { accArts = [Artifact aid AkDataObject (sdLabel d) Nothing o lane []]
         , accAssocs = [Association (FlowId i) src tgt AdOne ao]
         }
   (_, Nothing) -> undefinedRef (sdOn d) >> pure mempty
@@ -917,7 +1010,7 @@ makeSubprocess roots syms lane sub = do
         { fnId = nid
         , fnName = ssLabel sub
         , fnDoc = firstDoc (ssBody sub)
-        , fnKind = NkActivity (Activity (AkSubprocess inner) Nothing)
+        , fnKind = NkActivity (Activity (AkSubprocess SpEmbedded inner) Nothing)
         , fnLane = lane
         , fnDocOrder = o
         , fnExec = noExecution
@@ -956,7 +1049,12 @@ firstOf [] = Nothing
 -- at its own span beats letting it vanish silently into the XML.
 allowedProps :: NodeKw -> [Text]
 allowedProps k = case k of
-  KwStart -> ["message", "timer", "signal", "link", "escalation", "doc"]
+  -- 'error', 'compensation' and 'noninterrupting' are legal on a start event
+  -- only inside a @handler@ — an event subprocess is the one place BPMN gives
+  -- a start event something to interrupt. That is a property of where the step
+  -- sits rather than of the keyword, so it is checked over the built graph in
+  -- "Sequent.Bpmn.Validate" and accepted here.
+  KwStart -> ["message", "timer", "signal", "error", "link", "escalation", "compensation", "noninterrupting", "doc"]
   -- Camunda 8 implements a /throwing/ message event as a job: the broker
   -- creates one and a worker publishes the message. So an end or throw step
   -- carrying a message takes the job metadata a service task takes, and a
@@ -1001,7 +1099,7 @@ checkPropAllowed k n (SProp sp b)
 
 nodeKind :: Roots -> SNode -> NodeKw -> [SProp] -> R (NodeKind, ExecutionMeta)
 nodeKind roots n kw props = case kw of
-  KwStart -> eventOf EvStart
+  KwStart -> eventOf (EvStart (interruptingOf (any isNonInterrupting props)))
   KwEnd -> eventOf EvEnd
   KwWait -> eventOf EvIntermediateCatch
   KwThrow -> eventOf EvIntermediateThrow
@@ -1134,6 +1232,9 @@ nodeKind roots n kw props = case kw of
 
     isType (SProp _ (PType _)) = True
     isType _ = False
+
+    isNonInterrupting (SProp _ PNonInterrupting) = True
+    isNonInterrupting _ = False
 
 -- | An event carries at most one definition. Which keywords are legal on which
 -- event is settled by 'allowedProps'; this only turns the survivor into a

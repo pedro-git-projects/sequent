@@ -58,10 +58,15 @@ validateCamunda prov g =
 waitingOn :: FlowNode -> Maybe NodeId
 waitingOn n = case fnKind n of
   NkEvent (EventSpec fl (Just (EdMessage m)))
-    | fl `elem` [EvStart, EvIntermediateCatch] -> Just m
+    | catching fl -> Just m
   NkEvent (EventSpec (EvBoundary _) (Just (EdMessage m))) -> Just m
   NkActivity (Activity (AkTask (TtReceive (Just m))) _) -> Just m
   _ -> Nothing
+  where
+    catching fl = case fl of
+      EvStart _ -> True
+      EvIntermediateCatch -> True
+      _ -> False
 
 scopeDiags :: Provenance -> Map NodeId MessageDef -> Scope -> [Diagnostic]
 scopeDiags prov _msgs sc = concatMap nodeDiags (scNodes sc)
