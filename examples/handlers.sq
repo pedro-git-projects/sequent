@@ -1,0 +1,56 @@
+# An event subprocess, a group and a path that stops without an end event.
+#
+# A `handler` block is BPMN's event subprocess: it is reached by its start
+# event's trigger rather than by a sequence flow, so writing it between two
+# steps leaves those two steps connected to each other. LAYOUT-035 stacks the
+# handlers below the flow they handle.
+#
+# A `group` draws a rectangle round the steps it names (ART-005) and
+# constrains nothing. `stop` ends a path that has no end event, which is the
+# only way to write two of them in one scope.
+
+error payment_failed "PAYMENT_FAILED" "Payment failed"
+message order_cancelled "order-cancelled" correlation "=orderId"
+
+process fulfil "Fulfil the order" {
+  start placed "Order placed"
+
+  service charge "Charge the card" {
+    type "payments-charge"
+    retries 3
+  }
+
+  service reserve "Reserve stock" { type "wms-reserve" }
+
+  xor shippable "Everything in stock?" {
+    branch "yes" otherwise {
+      service ship "Ship the parcel" { type "carrier-ship" }
+      end shipped "Shipped"
+    }
+    branch "no" when "=not(inStock)" {
+      user chase "Chase the supplier"
+      stop
+    }
+  }
+
+  group money "Money moves" {
+    charge
+  }
+
+  handler recover "Payment failed" {
+    start caught "Card declined" {
+      error payment_failed
+    }
+    service unwind "Release the stock" { type "wms-release" }
+    end unwound "Released"
+  }
+
+  handler cancellation "Customer cancelled" {
+    start noticed "Cancellation received" {
+      message order_cancelled
+      noninterrupting
+    }
+    user confirm "Confirm the cancellation"
+    end confirmed "Cancellation noted"
+  }
+}

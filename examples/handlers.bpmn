@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:modeler="http://camunda.org/schema/modeler/1.0" id="Definitions_1" targetNamespace="http://bpmn.io/schema/bpmn" exporter="sequent" exporterVersion="0.2.0" modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.6.0">
+  <bpmn:message id="Message_order_cancelled" name="order-cancelled">
+    <bpmn:extensionElements>
+      <zeebe:subscription correlationKey="=orderId" />
+    </bpmn:extensionElements>
+  </bpmn:message>
+  <bpmn:error id="Error_payment_failed" name="Payment failed" errorCode="PAYMENT_FAILED" />
+  <bpmn:category id="Category_money">
+    <bpmn:categoryValue id="CategoryValue_money" value="Money moves" />
+  </bpmn:category>
+  <bpmn:process id="Process_fulfil" name="Fulfil the order" isExecutable="true">
+    <bpmn:startEvent id="StartEvent_placed" name="Order placed">
+      <bpmn:outgoing>Flow_placed_charge</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="Activity_charge" name="Charge the card">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="payments-charge" retries="3" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_placed_charge</bpmn:incoming>
+      <bpmn:outgoing>Flow_charge_reserve</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="Activity_reserve" name="Reserve stock">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="wms-reserve" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_charge_reserve</bpmn:incoming>
+      <bpmn:outgoing>Flow_reserve_shippable</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:exclusiveGateway id="Gateway_shippable" name="Everything in stock?" default="Flow_shippable_ship">
+      <bpmn:incoming>Flow_reserve_shippable</bpmn:incoming>
+      <bpmn:outgoing>Flow_shippable_ship</bpmn:outgoing>
+      <bpmn:outgoing>Flow_shippable_chase</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="Activity_ship" name="Ship the parcel">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="carrier-ship" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_shippable_ship</bpmn:incoming>
+      <bpmn:outgoing>Flow_ship_shipped</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="Event_shipped" name="Shipped">
+      <bpmn:incoming>Flow_ship_shipped</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:userTask id="Activity_chase" name="Chase the supplier">
+      <bpmn:extensionElements>
+        <zeebe:userTask />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_shippable_chase</bpmn:incoming>
+    </bpmn:userTask>
+    <bpmn:subProcess id="Activity_recover" name="Payment failed" triggeredByEvent="true">
+      <bpmn:startEvent id="StartEvent_caught" name="Card declined">
+        <bpmn:outgoing>Flow_caught_unwind</bpmn:outgoing>
+        <bpmn:errorEventDefinition id="StartEvent_caught_def" errorRef="Error_payment_failed" />
+      </bpmn:startEvent>
+      <bpmn:serviceTask id="Activity_unwind" name="Release the stock">
+        <bpmn:extensionElements>
+          <zeebe:taskDefinition type="wms-release" />
+        </bpmn:extensionElements>
+        <bpmn:incoming>Flow_caught_unwind</bpmn:incoming>
+        <bpmn:outgoing>Flow_unwind_unwound</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:endEvent id="Event_unwound" name="Released">
+        <bpmn:incoming>Flow_unwind_unwound</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_caught_unwind" sourceRef="StartEvent_caught" targetRef="Activity_unwind" />
+      <bpmn:sequenceFlow id="Flow_unwind_unwound" sourceRef="Activity_unwind" targetRef="Event_unwound" />
+    </bpmn:subProcess>
+    <bpmn:subProcess id="Activity_cancellation" name="Customer cancelled" triggeredByEvent="true">
+      <bpmn:startEvent id="StartEvent_noticed" name="Cancellation received" isInterrupting="false">
+        <bpmn:outgoing>Flow_noticed_confirm</bpmn:outgoing>
+        <bpmn:messageEventDefinition id="StartEvent_noticed_def" messageRef="Message_order_cancelled" />
+      </bpmn:startEvent>
+      <bpmn:userTask id="Activity_confirm" name="Confirm the cancellation">
+        <bpmn:extensionElements>
+          <zeebe:userTask />
+        </bpmn:extensionElements>
+        <bpmn:incoming>Flow_noticed_confirm</bpmn:incoming>
+        <bpmn:outgoing>Flow_confirm_confirmed</bpmn:outgoing>
+      </bpmn:userTask>
+      <bpmn:endEvent id="Event_confirmed" name="Cancellation noted">
+        <bpmn:incoming>Flow_confirm_confirmed</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_noticed_confirm" sourceRef="StartEvent_noticed" targetRef="Activity_confirm" />
+      <bpmn:sequenceFlow id="Flow_confirm_confirmed" sourceRef="Activity_confirm" targetRef="Event_confirmed" />
+    </bpmn:subProcess>
+    <bpmn:sequenceFlow id="Flow_placed_charge" sourceRef="StartEvent_placed" targetRef="Activity_charge" />
+    <bpmn:sequenceFlow id="Flow_charge_reserve" sourceRef="Activity_charge" targetRef="Activity_reserve" />
+    <bpmn:sequenceFlow id="Flow_reserve_shippable" sourceRef="Activity_reserve" targetRef="Gateway_shippable" />
+    <bpmn:sequenceFlow id="Flow_shippable_ship" name="yes" sourceRef="Gateway_shippable" targetRef="Activity_ship" />
+    <bpmn:sequenceFlow id="Flow_ship_shipped" sourceRef="Activity_ship" targetRef="Event_shipped" />
+    <bpmn:sequenceFlow id="Flow_shippable_chase" name="no" sourceRef="Gateway_shippable" targetRef="Activity_chase">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=not(inStock)</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:group id="Group_money" categoryValueRef="CategoryValue_money" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Process_fulfil">
+      <bpmndi:BPMNShape id="StartEvent_placed_di" bpmnElement="StartEvent_placed">
+        <dc:Bounds x="62" y="92" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="46" y="133" width="69" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_charge_di" bpmnElement="Activity_charge">
+        <dc:Bounds x="160" y="70" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_reserve_di" bpmnElement="Activity_reserve">
+        <dc:Bounds x="320" y="70" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_shippable_di" bpmnElement="Gateway_shippable" isMarkerVisible="true">
+        <dc:Bounds x="485" y="85" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="465" y="52" width="90" height="28" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_ship_di" bpmnElement="Activity_ship">
+        <dc:Bounds x="620" y="70" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_shipped_di" bpmnElement="Event_shipped">
+        <dc:Bounds x="782" y="92" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="778" y="133" width="44" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_chase_di" bpmnElement="Activity_chase">
+        <dc:Bounds x="620" y="210" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_recover_di" bpmnElement="Activity_recover" isExpanded="true">
+        <dc:Bounds x="70" y="350" width="420" height="180" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_cancellation_di" bpmnElement="Activity_cancellation" isExpanded="true">
+        <dc:Bounds x="70" y="590" width="440" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="StartEvent_caught_di" bpmnElement="StartEvent_caught">
+        <dc:Bounds x="132" y="422" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="113" y="463" width="74" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_unwind_di" bpmnElement="Activity_unwind">
+        <dc:Bounds x="230" y="400" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_unwound_di" bpmnElement="Event_unwound">
+        <dc:Bounds x="392" y="422" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="385" y="463" width="51" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="StartEvent_noticed_di" bpmnElement="StartEvent_noticed">
+        <dc:Bounds x="142" y="682" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="115" y="723" width="90" height="28" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_confirm_di" bpmnElement="Activity_confirm">
+        <dc:Bounds x="240" y="660" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_confirmed_di" bpmnElement="Event_confirmed">
+        <dc:Bounds x="402" y="682" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="375" y="723" width="90" height="28" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Group_money_di" bpmnElement="Group_money">
+        <dc:Bounds x="130" y="40" width="160" height="140" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_placed_charge_di" bpmnElement="Flow_placed_charge">
+        <di:waypoint x="98" y="110" />
+        <di:waypoint x="160" y="110" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_charge_reserve_di" bpmnElement="Flow_charge_reserve">
+        <di:waypoint x="260" y="110" />
+        <di:waypoint x="320" y="110" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_reserve_shippable_di" bpmnElement="Flow_reserve_shippable">
+        <di:waypoint x="420" y="110" />
+        <di:waypoint x="485" y="110" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_shippable_ship_di" bpmnElement="Flow_shippable_ship">
+        <di:waypoint x="535" y="110" />
+        <di:waypoint x="620" y="110" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="540" y="91" width="19" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ship_shipped_di" bpmnElement="Flow_ship_shipped">
+        <di:waypoint x="720" y="110" />
+        <di:waypoint x="782" y="110" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_shippable_chase_di" bpmnElement="Flow_shippable_chase">
+        <di:waypoint x="510" y="135" />
+        <di:waypoint x="510" y="250" />
+        <di:waypoint x="620" y="250" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="540" y="231" width="13" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_caught_unwind_di" bpmnElement="Flow_caught_unwind">
+        <di:waypoint x="168" y="440" />
+        <di:waypoint x="230" y="440" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_unwind_unwound_di" bpmnElement="Flow_unwind_unwound">
+        <di:waypoint x="330" y="440" />
+        <di:waypoint x="392" y="440" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_noticed_confirm_di" bpmnElement="Flow_noticed_confirm">
+        <di:waypoint x="178" y="700" />
+        <di:waypoint x="240" y="700" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_confirm_confirmed_di" bpmnElement="Flow_confirm_confirmed">
+        <di:waypoint x="340" y="700" />
+        <di:waypoint x="402" y="700" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>
