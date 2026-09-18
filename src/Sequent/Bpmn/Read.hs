@@ -8,8 +8,8 @@
 -- is that the layout engine computes it again.
 --
 -- __What it will not do is guess.__ A BPMN file may contain constructs this
--- language cannot express — an event subprocess, a transaction, nested lanes, a
--- data store, a BPMN group. Dropping them silently would turn "import" into
+-- language cannot express — a transaction, an ad-hoc subprocess, nested lanes,
+-- a data store. Dropping them silently would turn "import" into
 -- "import most of it", and the author would find out from a diff. Every one of
 -- them is reported, by id, as a diagnostic; the import still produces a graph
 -- for everything else, so the report is a list of what to do by hand rather
@@ -23,13 +23,53 @@ import Data.Char (isDigit)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Read as TR
 
 import Sequent.Bpmn.Semantic
 import Sequent.Camunda.Model
 import Sequent.Camunda.XmlParse
 import Sequent.Diagnostic
+
+-- | What the reader needs from outside the element it is looking at.
+--
+-- Both fields exist for groups. A group's text lives in a @categoryValue@ at
+-- the root of the file, and a group's /members/ live nowhere at all: BPMN
+-- records a rectangle and leaves "what is in it" to the reader's eye. So this
+-- is the one place the importer looks at diagram interchange, and it looks at
+-- it only to answer that question. Every other coordinate in the file is
+-- discarded, and the group's own rectangle is discarded too — ART-005 computes
+-- it again from the members this recovers.
+data Env = Env
+  { envCategories :: Map Text Text
+  -- ^ @categoryValue@ id to its text.
+  , envBounds     :: Map Text Rect
+  -- ^ Element id to the bounds its @BPMNShape@ declared.
+  , envCollapsed  :: Set Text
+  -- ^ Containers whose shape says @isExpanded="false"@.
+  }
+
+data Rect = Rect
+  { rcX :: !Double
+  , rcY :: !Double
+  , rcW :: !Double
+  , rcH :: !Double
+  }
+
+rectCentre :: Rect -> (Double, Double)
+rectCentre r = (rcX r + rcW r / 2, rcY r + rcH r / 2)
+
+-- | Whether a point is inside a rectangle, with a grid unit of slack so that a
+-- member sitting exactly on the border counts as inside.
+containsPoint :: Rect -> (Double, Double) -> Bool
+containsPoint r (x, y) =
+  x >= rcX r - slack && x <= rcX r + rcW r + slack
+    && y >= rcY r - slack && y <= rcY r + rcH r + slack
+  where
+    slack = 10
 
 data ReadResult = ReadResult
   { rdGraph       :: Maybe SemanticGraph
@@ -107,6 +147,51 @@ definitions root = (graph, rootDiags ++ colDiags ++ procDiags ++ strayDiags)
       ]
     rootDiags = []
 
+    env = Env categories bounds collapsed
+
+    -- One @category@ holds one or more @categoryValue@s; a group points at a
+    -- value, never at the category. Flattening the two levels loses nothing,
+    -- because nothing else in a BPMN file refers to a category.
+    categories =
+      Map.fromList
+        [ (idOf v, fromMaybe "" (attrNamed "value" v))
+        | c <- kidsNamed "category" root
+        , v <- kidsNamed "categoryValue" c
+        ]
+
+    shapes =
+      [ (el, sh)
+      | d <- kidsNamed "BPMNDiagram" root
+      , pl <- kidsNamed "BPMNPlane" d
+      , sh <- kidsNamed "BPMNShape" pl
+      , Just el <- [attrNamed "bpmnElement" sh]
+      ]
+
+    bounds =
+      Map.fromList
+        [ (el, r)
+        | (el, sh) <- shapes
+        , Just b <- [kidNamed "Bounds" sh]
+        , Just r <- [rectOf b]
+        ]
+
+    collapsed = Set.fromList [el | (el, sh) <- shapes, attrNamed "isExpanded" sh == Just "false"]
+
+    rectOf b =
+      Rect
+        <$> num "x" b
+        <*> num "y" b
+        <*> num "width" b
+        <*> num "height" b
+    num a e = attrNamed a e >>= readDouble
+
+    -- DI coordinates are decimals, and a trailing unit or stray space is not
+    -- worth failing a whole import over: a bound that will not parse simply
+    -- means the element has no known geometry.
+    readDouble t = case TR.double (T.strip t) of
+      Right (d, rest) | T.null (T.strip rest) -> Just d
+      _ -> Nothing
+
     correlationKey e = do
       ext <- kidNamed "extensionElements" e
       sub <- kidIn nsZeebe "subscription" ext
@@ -123,7 +208,7 @@ definitions root = (graph, rootDiags ++ colDiags ++ procDiags ++ strayDiags)
         )
 
     (procs, procDiags) =
-      let rs = zipWith process [0 ..] (kidsNamed "process" root)
+      let rs = zipWith (process env) [0 ..] (kidsNamed "process" root)
        in (map fst rs, concatMap snd rs)
 
     -- Anything at the top of the file that is neither a root element this
@@ -137,6 +222,7 @@ definitions root = (graph, rootDiags ++ colDiags ++ procDiags ++ strayDiags)
         known =
           [ "message", "signal", "error", "escalation", "collaboration", "process"
           , "BPMNDiagram", "extensionElements", "import", "itemDefinition", "dataStore"
+          , "category"
           ]
 
 kindWord :: Text -> Text
@@ -184,8 +270,8 @@ collaboration c =
 
 -- Process ------------------------------------------------------------------------
 
-process :: Int -> XNode -> W BpmnProcess
-process _ p = (proc', laneDiags ++ scopeDiags)
+process :: Env -> Int -> XNode -> W BpmnProcess
+process env _ p = (assignOrphanLanes proc', laneDiags ++ scopeDiags)
   where
     pid = ProcessId (idOf p)
     proc' =
@@ -214,13 +300,13 @@ process _ p = (proc', laneDiags ++ scopeDiags)
       , not (null (kidsNamed "childLaneSet" l))
       ]
 
-    (sc, scopeDiags) = scopeOf (ScopeProcess pid) laneOf p
+    (sc, scopeDiags) = scopeOf env (ScopeProcess pid) laneOf p
 
 -- Scopes ---------------------------------------------------------------------------
 
 -- | The flow elements directly inside a process or an expanded subprocess.
-scopeOf :: ScopeId -> Map NodeId LaneId -> XNode -> W Scope
-scopeOf sid laneOf container = (scope, nodeDiags ++ artDiags)
+scopeOf :: Env -> ScopeId -> Map NodeId LaneId -> XNode -> W Scope
+scopeOf env sid laneOf container = (scope, nodeDiags ++ artDiags)
   where
     scope =
       Scope
@@ -233,7 +319,7 @@ scopeOf sid laneOf container = (scope, nodeDiags ++ artDiags)
 
     indexed = zip [0 ..] (xnChildren container)
 
-    nodeResults = [flowNode laneOf k e | (k, e) <- indexed, isFlowNodeTag (qnLocal (xnName e))]
+    nodeResults = [flowNode env laneOf k e | (k, e) <- indexed, isFlowNodeTag (qnLocal (xnName e))]
     nodes = mapMaybe fst nodeResults
     nodeDiags = concatMap snd nodeResults
 
@@ -265,23 +351,59 @@ scopeOf sid laneOf container = (scope, nodeDiags ++ artDiags)
       | otherwise = FcExpression . feel <$> textIn "conditionExpression" e
 
     artifacts =
-      [ Artifact (ArtifactId (idOf e)) AkTextAnnotation Nothing (textIn "text" e) k Nothing
+      [ Artifact (ArtifactId (idOf e)) AkTextAnnotation Nothing (textIn "text" e) k Nothing []
       | (k, e) <- indexed
       , qnLocal (xnName e) == "textAnnotation"
       ]
-        ++ [ Artifact (ArtifactId (idOf e)) AkDataObject (nameOf e) Nothing k Nothing
+        ++ [ Artifact (ArtifactId (idOf e)) AkDataObject (nameOf e) Nothing k Nothing []
            | (k, e) <- indexed
            , qnLocal (xnName e) == "dataObjectReference"
            ]
+        ++ [ Artifact (ArtifactId (idOf e)) AkGroup (groupText e) Nothing k Nothing (membersOfGroup e)
+           | (k, e) <- indexed
+           , qnLocal (xnName e) == "group"
+           ]
+
+    -- A group's text is in the category value it points at, not on the group.
+    groupText e = do
+      ref <- attrNamed "categoryValueRef" e
+      v <- Map.lookup ref (envCategories env)
+      if T.null (T.strip v) then Nothing else Just (T.strip v)
+
+    -- The one geometric inference in the importer. A group declares a
+    -- rectangle and no members, so its members are the flow nodes of this
+    -- scope whose shapes sit inside it — by centre, because a modeller drags a
+    -- group roughly round a run of steps and a member that pokes out of the
+    -- edge is still plainly a member.
+    --
+    -- Boundary events are never members: they are drawn on their host's
+    -- border, so a group that holds the host encloses them whatever the author
+    -- meant.
+    membersOfGroup e = case Map.lookup (idOf e) (envBounds env) of
+      Nothing -> []
+      Just box ->
+        [ fnId n
+        | n <- nodes
+        , not (nodeIsBoundary n)
+        , Just r <- [Map.lookup (unNodeId (fnId n)) (envBounds env)]
+        , containsPoint box (rectCentre r)
+        ]
 
     artDiags =
       [ unsupported "a data store reference" (idOf e) "the language has no data-store construct"
       | (_, e) <- indexed
       , qnLocal (xnName e) == "dataStoreReference"
       ]
-        ++ [ unsupported "a BPMN group" (idOf e) "the language has no group construct"
+        ++ [ withHint
+               "sequent lists a group's members; give the group a rectangle that holds the steps it means"
+               ( diagnostic
+                   Warning
+                   SemanticError
+                   ("group '" <> idOf e <> "' encloses no step and was read with no members")
+               )
            | (_, e) <- indexed
            , qnLocal (xnName e) == "group"
+           , null (membersOfGroup e)
            ]
         -- Everything else inside a process or a subprocess. Naming the tag is
         -- the point: an import that drops a transaction or an ad-hoc
@@ -324,6 +446,14 @@ scopeOf sid laneOf container = (scope, nodeDiags ++ artDiags)
            , r <- kidsNamed "targetRef" a
            ]
 
+-- | BPMN spells "does catching this cancel what it is attached to" as two
+-- attributes with opposite defaults that both mean the same thing. Both default
+-- to interrupting.
+interruptingFrom :: Text -> XNode -> Interrupting
+interruptingFrom attr e
+  | attrNamed attr e == Just "false" = NonInterrupting
+  | otherwise = Interrupting
+
 isFlowNodeTag :: Text -> Bool
 isFlowNodeTag t = t `elem` flowNodeTags
 
@@ -337,8 +467,8 @@ flowNodeTags =
 
 -- Flow nodes -----------------------------------------------------------------------
 
-flowNode :: Map NodeId LaneId -> Int -> XNode -> (Maybe FlowNode, [Diagnostic])
-flowNode laneOf order e = case kindOf of
+flowNode :: Env -> Map NodeId LaneId -> Int -> XNode -> (Maybe FlowNode, [Diagnostic])
+flowNode env laneOf order e = case kindOf of
   Nothing -> (Nothing, skipDiags)
   Just (k, ds) ->
     ( Just
@@ -349,9 +479,9 @@ flowNode laneOf order e = case kindOf of
           , fnKind = k
           , fnLane = Map.lookup nid laneOf
           , fnDocOrder = order
-          , fnExec = if inert then ExNone else execOf e
+          , fnExec = if inert then ExNone else meta
           }
-    , ds ++ inertDiags
+    , ds ++ inertDiags ++ collapsedDiags ++ plainUserDiags
     )
   where
     nid = NodeId (idOf e)
@@ -362,6 +492,28 @@ flowNode laneOf order e = case kindOf of
     -- metadata anyway would produce a step this language has no keyword for —
     -- an abstract task with a job type — so it is dropped, and saying so beats
     -- letting the engine's silence be the explanation.
+    -- A @bpmn:userTask@ is a user task because of its tag — unlike a
+    -- @bpmn:task@, whose tag means "undefined". A BPMN 2.0 file, or one
+    -- written for Camunda 7, carries no @zeebe:userTask@ at all, and reading
+    -- that as "no execution semantics" makes the round trip fail on a file
+    -- that is not wrong: this language's 'user' keyword always means a Camunda
+    -- 8 user task, so the graph it produces would never match.
+    meta = case (tag, execOf e) of
+      ("userTask", ExNone) -> ExUser emptyUserTask
+      (_, m) -> m
+
+    plainUserDiags =
+      [ withHint
+          "Camunda 8 runs a user task through its own task list; the element is added on the way out"
+          ( diagnostic
+              Advisory
+              SemanticError
+              ("user task '" <> idOf e <> "' has no 'zeebe:userTask'; it will come back with one")
+          )
+      | tag == "userTask"
+      , execOf e == ExNone
+      ]
+
     inert = tag == "task" && execOf e /= ExNone
     inertDiags =
       [ withHint
@@ -370,16 +522,25 @@ flowNode laneOf order e = case kindOf of
       | inert
       ]
 
-    skipDiags = case tag of
-      "subProcess" -> note (unsupported subKind (idOf e) "inline its contents, or model it as a call activity")
-      _ -> note (unsupported (kindWord tag) (idOf e) "")
+    skipDiags = note (unsupported (kindWord tag) (idOf e) "")
 
-    subKind
-      | attrNamed "triggeredByEvent" e == Just "true" = "an event subprocess"
-      | otherwise = "a collapsed subprocess"
+    -- Collapsed is a property of the drawing, not of the process: the contents
+    -- are the same either way, and this language writes every subprocess
+    -- expanded. Worth saying, because the file will not look the same.
+    collapsedDiags =
+      [ withHint
+          "the steps inside it are unchanged; only the drawing is"
+          ( diagnostic
+              Advisory
+              SemanticError
+              ("subprocess '" <> idOf e <> "' is drawn collapsed and will come back expanded")
+          )
+      | tag == "subProcess"
+      , Set.member (idOf e) (envCollapsed env)
+      ]
 
     kindOf = case tag of
-      "startEvent" -> event EvStart
+      "startEvent" -> event (EvStart (interruptingFrom "isInterrupting" e))
       "endEvent" -> event EvEnd
       "intermediateCatchEvent" -> event EvIntermediateCatch
       "intermediateThrowEvent" -> event EvIntermediateThrow
@@ -388,7 +549,7 @@ flowNode laneOf order e = case kindOf of
           ( EvBoundary
               BoundaryAttachment
                 { baHost = NodeId (fromMaybe "" (attrNamed "attachedToRef" e))
-                , baInterrupting = attrNamed "cancelActivity" e /= Just "false"
+                , baInterrupting = interruptingFrom "cancelActivity" e
                 }
           )
       "task" -> activity (AkTask TtAbstract)
@@ -400,11 +561,10 @@ flowNode laneOf order e = case kindOf of
       "sendTask" -> activity (AkTask TtSend)
       "receiveTask" -> activity (AkTask (TtReceive (NodeId <$> attrNamed "messageRef" e)))
       "callActivity" -> activity AkCallActivity
-      "subProcess"
-        | attrNamed "triggeredByEvent" e == Just "true" -> Nothing
-        | otherwise ->
-            let (inner, ds) = scopeOf (ScopeSubprocess nid) laneOf e
-             in Just (NkActivity (Activity (AkSubprocess inner) (loopOf e)), ds)
+      "subProcess" ->
+        let sk = if attrNamed "triggeredByEvent" e == Just "true" then SpEventSub else SpEmbedded
+            (inner, ds) = scopeOf env (ScopeSubprocess nid) laneOf e
+         in Just (NkActivity (Activity (AkSubprocess sk inner) (loopOf e)), ds)
       "exclusiveGateway" -> gateway GwExclusive
       "parallelGateway" -> gateway GwParallel
       "inclusiveGateway" -> gateway GwInclusive

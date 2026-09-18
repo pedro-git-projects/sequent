@@ -92,7 +92,39 @@ spec = do
     it "names every construct it cannot express" $
       messagesOfD (rdDiagnostics (readBpmn "t.bpmn" oddBpmn))
         `shouldSatisfy` \ms ->
-          all (\w -> any (isInfixOf w) ms) ["group", "data store", "nested lane set", "event subprocess", "transaction"]
+          all (\w -> any (isInfixOf w) ms) ["data store", "nested lane set", "transaction"]
+
+    it "reads an event subprocess rather than skipping it" $
+      -- It used to be reported as having no equivalent. It has one now, and a
+      -- skipped handler is a process that silently stops handling something.
+      fmap (fmap isEventSubprocess . lookupNode "Activity_es") (rdGraph (readBpmn "t.bpmn" oddBpmn))
+        `shouldBe` Just (Just True)
+
+    it "keeps a non-interrupting start event non-interrupting" $
+      let x = compileXml "message m \"m\"\nprocess p { start s\ntask t\nend e\nhandler h { start c { message m\nnoninterrupting }\ntask u\nend f } }"
+       in fmap (fmap fnKind . lookupNode "StartEvent_c") (rdGraph (readBpmn "t.bpmn" x))
+            `shouldSatisfy` \r -> case r of
+              Just (Just (NkEvent (EventSpec (EvStart NonInterrupting) _))) -> True
+              _ -> False
+
+    it "recovers a group's members from the rectangle it was drawn as" $ do
+      -- BPMN records a rectangle and no membership relation, so the members
+      -- have to come from the geometry. This is the one place the importer
+      -- reads diagram interchange, and it reads it only for this.
+      let x = compileXml "start s\ntask a\ntask b\nend e\ngroup g \"G\" { a }"
+          members = concatMap artMembers . concatMap scArtifacts . maybe [] (map procScope . sgProcesses)
+      members (rdGraph (readBpmn "t.bpmn" x)) `shouldBe` [NodeId "Activity_a"]
+
+    it "takes a group's text from the category value it points at" $
+      let x = compileXml "start s\ntask a\nend e\ngroup g \"Money moves\" { a }"
+          names = concatMap (map artName . scArtifacts) . maybe [] (map procScope . sgProcesses)
+       in names (rdGraph (readBpmn "t.bpmn" x)) `shouldBe` [Just "Money moves"]
+
+    it "says so when a group encloses nothing" $
+      -- A group drawn round empty space is not an error in the file, but it is
+      -- a group that will come back with no members, and that is worth saying.
+      messagesOfD (rdDiagnostics (readBpmn "t.bpmn" oddBpmn))
+        `shouldSatisfy` any (isInfixOf "encloses no step")
 
   describe "importing" $ do
     it "recovers a name from an id this compiler allocated" $
@@ -105,6 +137,59 @@ spec = do
       -- change on the way back out — the one thing the round trip cannot keep.
       let x = T.replace "Activity_greet" "Activity_1x9k2df" (compileXml "start s\ntask greet \"Say hello\"\nend e")
        in irSource (importText "t.bpmn" x) `shouldSatisfy` maybe False (T.isInfixOf "task say_hello \"Say hello\"")
+
+    it "closes every dangling path with 'stop'" $ do
+      -- Two branches that both dead-end. Before 'stop' existed the emitter
+      -- could write only one of them: two steps written next to each other are
+      -- connected by the resolver, so the second path swallowed the first, and
+      -- the import warned that it had dropped one.
+      let src = importedSource danglingBranches
+      T.count "stop" src `shouldBe` 2
+      messagesOfD (irDiagnostics (importText "t.bpmn" (compileXml danglingBranches)))
+        `shouldSatisfy` all (not . isInfixOf "only one of them can be written")
+
+    it "does not invent a merge for two branches that both dead-end" $
+      -- Two branches left open are two branches the resolver counts as
+      -- reaching the end of the block, and it derives a merge from that. The
+      -- merge is not in the file, so the round-trip check in 'importText'
+      -- rejects it; this pins the source shape that avoids it.
+      importedSource danglingBranches `shouldSatisfy` \src -> not ("g_join" `T.isInfixOf` src)
+
+    it "round-trips a subprocess inside a lane" $
+      -- BPMN lists only a process's own flow nodes in a @flowNodeRef@, never a
+      -- subprocess's, so the lane of a step inside a subprocess is not in the
+      -- file. Both directions have to infer it the same way or the graphs
+      -- cannot match.
+      importDiags "process p { lane ops \"Ops\" { start s\nsubprocess sub { start i\ntask inner\nend o }\nend e } }"
+        `shouldBe` []
+
+    it "round-trips an event subprocess inside a lane" $
+      importDiags
+        ( "error boom \"BOOM\"\nprocess p { lane ops \"Ops\" { start s\ntask t\nend e\n"
+            <> "handler h { start c { error boom }\ntask u\nend f } } }"
+        )
+        `shouldBe` []
+
+    it "round-trips a user task with no zeebe extension" $ do
+      -- A BPMN 2.0 file, or one written for Camunda 7, has a bare
+      -- @bpmn:userTask@. The tag is what makes it a user task, so reading it as
+      -- "no execution semantics" would make the round trip fail on a file that
+      -- is not wrong.
+      let doc =
+            T.unlines
+              [ "<bpmn:definitions xmlns:bpmn=\"http://www.omg.org/spec/BPMN/20100524/MODEL\" id=\"D\">"
+              , "<bpmn:process id=\"Process_p\" name=\"P\">"
+              , "<bpmn:startEvent id=\"StartEvent_s\"/>"
+              , "<bpmn:userTask id=\"Activity_u\" name=\"U\"/>"
+              , "<bpmn:endEvent id=\"Event_e\"/>"
+              , "<bpmn:sequenceFlow id=\"Flow_1\" sourceRef=\"StartEvent_s\" targetRef=\"Activity_u\"/>"
+              , "<bpmn:sequenceFlow id=\"Flow_2\" sourceRef=\"Activity_u\" targetRef=\"Event_e\"/>"
+              , "</bpmn:process>"
+              , "</bpmn:definitions>"
+              ]
+          r = importText "t.bpmn" doc
+      messagesOfD [d | d <- irDiagnostics r, diagSeverity d == Error] `shouldBe` []
+      messagesOfD (irDiagnostics r) `shouldSatisfy` any (isInfixOf "will come back with one")
 
     it "writes a loop back as a goto" $
       importedSource "start s\ntask a\nxor g { branch \"again\" when \"=r\" { goto a } branch \"on\" otherwise { end e } }"
@@ -168,6 +253,12 @@ importedSource src = case irSource (importText "t.bpmn" (compileXml src)) of
   Just s -> s
   Nothing -> ""
 
+-- | The errors an import reports, which for a file this compiler wrote should
+-- be none: 'importText' compiles its own output and compares the graphs.
+importDiags :: Text -> [String]
+importDiags src =
+  messagesOfD [d | d <- irDiagnostics (importText "t.bpmn" (compileXml src)), diagSeverity d == Error]
+
 messagesOfD :: [Diagnostic] -> [String]
 messagesOfD = map (T.unpack . diagMessage)
 
@@ -186,6 +277,11 @@ taskDoc tag ext =
 
 taskExec :: Text -> Text -> Maybe ExecutionMeta
 taskExec tag ext = fmap fnExec (rdGraph (readBpmn "t.bpmn" (taskDoc tag ext)) >>= lookupNode "Activity_step")
+
+-- | A gateway whose branches both stop without an end event.
+danglingBranches :: Text
+danglingBranches =
+  "start s\nxor g { branch \"a\" when \"=x\" { task p\nstop } branch \"b\" otherwise { task q\nstop } }"
 
 oddBpmn :: Text
 oddBpmn =

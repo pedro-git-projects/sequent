@@ -183,9 +183,14 @@ naming g =
         ++ concatMap scopeNames (allScopes (procScope p))
     scopeNames sc =
       [claim (classOf n) (unNodeId (fnId n)) (fnName n) | n <- scNodes sc]
-        ++ [claim IcTextAnnotation (unArtifactId (artId a)) (artName a) | a <- scArtifacts sc]
+        ++ [claim (artClassOf a) (unArtifactId (artId a)) (artName a) | a <- scArtifacts sc]
+    artClassOf a = case artKind a of
+      AkGroup -> IcGroup
+      AkDataObject -> IcDataObjectRef
+      AkDataStore -> IcDataObjectRef
+      AkTextAnnotation -> IcTextAnnotation
     classOf n = case fnKind n of
-      NkEvent (EventSpec EvStart _) -> IcStartEvent
+      NkEvent (EventSpec (EvStart _) _) -> IcStartEvent
       NkEvent _ -> IcEndEvent -- the same "Event_" prefix
       NkGateway _ -> IcGateway
       NkActivity _ -> IcActivity
@@ -299,6 +304,7 @@ laneItems syms p sc = (relane Nothing items, ds)
       IStep (StGateway gw) -> byName (unLoc (sgName gw))
       IStep (StSubprocess s') -> byName (unLoc (ssName s'))
       IBoundary b -> byName (unLoc (bdAs b))
+      IHandler h -> byName (unLoc (shName h))
       _ -> Nothing
     byName nm = Map.lookup nm nodeByName >>= (`Map.lookup` laneOfNode)
 
@@ -309,6 +315,7 @@ laneItems syms p sc = (relane Nothing items, ds)
         IStep (StGateway gw {sgBranches = map inBranch (sgBranches gw)})
       IStep (StSubprocess s') -> IStep (StSubprocess s' {ssBody = relane own (ssBody s')})
       IBoundary b -> IBoundary b {bdBody = relane own (bdBody b)}
+      IHandler h -> IHandler h {shBody = relane own (shBody h)}
       _ -> i
       where
         own = maybe inh Just (laneOfItem i)
@@ -374,42 +381,43 @@ symOf :: Ctx -> NodeId -> Text
 symOf cx i = nameOfId (cxSyms cx) (unNodeId i)
 
 emitScope :: Symbols -> Scope -> ([SItem], [Diagnostic])
-emitScope syms sc = (closed ++ open ++ leftovers ++ artefactItems cx, ds ++ openDiag)
+emitScope syms sc =
+  ( closed ++ open ++ handlers ++ leftovers ++ artefactItems cx
+  , ds ++ handlerDiags
+  )
   where
     cx = mkCtx syms sc
 
+    -- An event subprocess is not on any path, so it is never a chain root:
+    -- walking into one would write it as an ordinary @subprocess@ step and
+    -- chain whatever followed it onto a container nothing flows into.
+    isRoot n = not (Set.member (fnId n) (cxBoundaries cx)) && not (isEventSubprocess n)
+
     roots =
-      [ fnId n
-      | n <- scNodes sc
-      , not (Set.member (fnId n) (cxBoundaries cx))
-      , isStartEvent n || null (inOf cx (fnId n))
-      ]
-        ++ [fnId n | n <- scNodes sc, not (Set.member (fnId n) (cxBoundaries cx))]
+      [fnId n | n <- scNodes sc, isRoot n, isStartEvent n || null (inOf cx (fnId n))]
+        ++ [fnId n | n <- scNodes sc, isRoot n]
 
     (chains, st) = runRoots cx roots
     closed = concatMap chItems (filter chClosed chains)
-    open = concatMap chItems (filter (not . chClosed) chains)
     ds = concatMap chDiags chains
+
+    -- Every path that stops short of an end event is closed with @stop@,
+    -- because the next thing written in this body would otherwise be joined to
+    -- it. The last one needs no terminator: nothing that follows it in the
+    -- emitted body is a step.
+    openChains = filter (not . chClosed) chains
+    open = concat (zipWith terminate [1 :: Int ..] openChains)
+    terminate k ch
+      | k < length openChains = chItems ch ++ [IStep (StStop noSpan)]
+      | otherwise = chItems ch
+
+    (handlers, handlerDiags) = handlerItems cx
 
     -- Anything the structure did not create has to be said outright.
     leftovers =
       [ flowItem cx f
       | f <- sortOn sfDocOrder (scFlows sc)
       , not (Set.member (sfId f) (emFlows st))
-      ]
-
-    openDiag =
-      [ withHint
-          "a step that leads nowhere and is not an end event cannot be followed by another step: the language would connect the two"
-          ( diagnostic
-              Warning
-              SemanticError
-              ( "this scope has "
-                  <> T.pack (show (length (filter (not . chClosed) chains)))
-                  <> " paths that stop without an end event; only one of them can be written"
-              )
-          )
-      | length (filter (not . chClosed) chains) > 1
       ]
 
 -- | A chain of steps, and what it leaves behind.
@@ -519,7 +527,10 @@ pickGoto cx stop st n = case left of
 stepFor :: Ctx -> Set NodeId -> Emitted -> FlowNode -> ([SItem], Emitted, [Diagnostic], Maybe NodeId)
 stepFor cx stop st n = case fnKind n of
   NkGateway k -> gatewayFor cx stop st n k
-  NkActivity (Activity (AkSubprocess inner) _) ->
+  -- Embedded only: an event subprocess is never walked as a step ('isRoot'
+  -- keeps it out of the roots), and writing one as @subprocess@ would connect
+  -- it to whatever the chain reached it from.
+  NkActivity (Activity (AkSubprocess SpEmbedded inner) _) ->
     let (is, ds) = emitScope (cxSyms cx) inner
      in ( [IStep (StSubprocess (SSub (loc (symOf cx (fnId n))) (fnName n) (docItems ++ is) noSpan))]
         , st
@@ -543,10 +554,10 @@ nodeFor cx n = SNode (loc kw) (loc (symOf cx (fnId n))) (fnName n) props noSpan
 
 keywordFor :: Ctx -> FlowNode -> (NodeKw, [SPropBody])
 keywordFor cx n = case fnKind n of
-  NkEvent (EventSpec fl d) -> (eventKw fl, triggerProps cx d)
+  NkEvent (EventSpec fl d) -> (eventKw fl, triggerProps cx d ++ interruptProps fl)
   NkActivity (Activity k _) -> case k of
     AkCallActivity -> (KwCall, [])
-    AkSubprocess _ -> (KwTask, [])
+    AkSubprocess _ _ -> (KwTask, [])
     AkTask t -> case t of
       TtAbstract -> (KwTask, [])
       TtService -> (KwService, [])
@@ -558,8 +569,14 @@ keywordFor cx n = case fnKind n of
       TtReceive m -> (KwReceive, [PMessage (symOf cx i) | Just i <- [m]])
   NkGateway _ -> (KwTask, [])
   where
+    -- Only a start event can be non-interrupting, and only inside an event
+    -- subprocess; anywhere else the flag is not representable and not true.
+    interruptProps fl = case fl of
+      EvStart NonInterrupting -> [PNonInterrupting]
+      _ -> []
+
     eventKw fl = case fl of
-      EvStart -> KwStart
+      EvStart _ -> KwStart
       EvEnd -> KwEnd
       EvIntermediateCatch -> KwWait
       EvIntermediateThrow -> KwThrow
@@ -686,10 +703,15 @@ gatewayFor cx stop st n k
       | useDerived = [(f, chItems ch) | (f, ch, _) <- branches]
       | otherwise = [(f, chItems ch ++ closer ch) | (f, ch, _) <- branches]
 
+    -- A branch left open is a branch the resolver would count as reaching the
+    -- end of the block, and two of those make it derive a merge this process
+    -- does not have. One that has a plain edge left is closed with the @goto@
+    -- that writes it; one that genuinely leads nowhere is closed with @stop@.
     closer ch = case chTail ch of
       Just t
         | (x : _) <- closable t -> [IStep (StGoto (loc (symOf cx (sfTarget x))) noSpan)]
-      _ -> []
+        | otherwise -> [IStep (StStop noSpan)]
+      Nothing -> []
 
     closable t =
       [ x
@@ -823,6 +845,25 @@ dedup = go Set.empty
 
 -- Boundary events, notes and data ------------------------------------------------------
 
+-- | The event subprocesses of a scope, each with its own body.
+--
+-- No 'Emitted' is threaded through: an event subprocess shares no node and no
+-- flow with the scope around it, so there is nothing for the walk that emitted
+-- the main flow to have claimed first.
+handlerItems :: Ctx -> ([SItem], [Diagnostic])
+handlerItems cx = (map fst rs, concatMap snd rs)
+  where
+    rs =
+      [ ( IHandler (SHandler (loc (symOf cx (fnId n))) (fnName n) (docItems n ++ is) noSpan)
+        , ds
+        )
+      | n <- scNodes (cxScope cx)
+      , Just inner <- [subprocessScope n]
+      , isEventSubprocess n
+      , let (is, ds) = emitScope (cxSyms cx) inner
+      ]
+    docItems n = [IDoc d noSpan | Just d <- [fnDoc n]]
+
 boundaryItems :: Ctx -> Set NodeId -> Emitted -> NodeId -> ([SItem], Emitted)
 boundaryItems cx boundaries st host = foldl' one ([], st) (Map.findWithDefault [] host (cxHosts cx))
   where
@@ -846,7 +887,7 @@ boundaryOf cx b body =
   SBoundary
     { bdHost = loc (symOf cx host)
     , bdTrigger = loc trigger
-    , bdNonInt = not interrupting
+    , bdNonInt = not (isInterrupting interrupting)
     , bdAs = loc (symOf cx (fnId b))
     , bdLabel = fnName b
     , bdBody = body
@@ -855,7 +896,7 @@ boundaryOf cx b body =
   where
     (host, interrupting) = case fnKind b of
       NkEvent (EventSpec (EvBoundary att) _) -> (baHost att, baInterrupting att)
-      _ -> (fnId b, True)
+      _ -> (fnId b, Interrupting)
     trigger = case fnKind b of
       NkEvent (EventSpec _ (Just (EdMessage i))) -> TgMessage (symOf cx i)
       NkEvent (EventSpec _ (Just (EdSignal i))) -> TgSignal (symOf cx i)
@@ -878,6 +919,16 @@ artefactItems cx = mapMaybe itemOf (scArtifacts (cxScope cx))
       AkDataObject -> do
         (host, dir) <- hostDirOf (artId a)
         pure (IData (SData (loc (symOf' (unArtifactId (artId a)))) (artName a) dir (loc host) noSpan))
+      AkGroup ->
+        Just
+          ( IGroup
+              ( SGroup
+                  (loc (symOf' (unArtifactId (artId a))))
+                  (artName a)
+                  [GMember (loc (symOf cx m)) | m <- artMembers a]
+                  noSpan
+              )
+          )
       AkDataStore -> Nothing
 
     symOf' = nameOfId (cxSyms cx)

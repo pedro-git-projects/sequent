@@ -292,14 +292,17 @@ relabel f g =
             [ x {sfId = flow (sfId x), sfSource = node (sfSource x), sfTarget = node (sfTarget x)}
             | x <- scFlows sc
             ]
-        , scArtifacts = [a {artId = art (artId a), artLane = lane <$> artLane a} | a <- scArtifacts sc]
+        , scArtifacts =
+            [ a {artId = art (artId a), artLane = lane <$> artLane a, artMembers = map node (artMembers a)}
+            | a <- scArtifacts sc
+            ]
         , scAssociations = [a {asId = flow (asId a), asSource = ref (asSource a), asTarget = ref (asTarget a)} | a <- scAssociations sc]
         }
 
     fnode n = n {fnId = node (fnId n), fnLane = lane <$> fnLane n, fnKind = kind (fnKind n)}
     kind k = case k of
       NkEvent (EventSpec fl d) -> NkEvent (EventSpec (flav fl) (def <$> d))
-      NkActivity (Activity (AkSubprocess inner) l) -> NkActivity (Activity (AkSubprocess (scope inner)) l)
+      NkActivity (Activity (AkSubprocess sk inner) l) -> NkActivity (Activity (AkSubprocess sk (scope inner)) l)
       NkActivity (Activity (AkTask (TtReceive m)) l) -> NkActivity (Activity (AkTask (TtReceive (node <$> m))) l)
       other -> other
     flav fl = case fl of
@@ -338,22 +341,54 @@ normalise g0 = g {sgProcesses = map proc' (sgProcesses g), sgCollaboration = col
         , scArtifacts = [a {artDocOrder = 0} | a <- sortOn artId (scArtifacts sc)]
         , scAssociations = [a {asDocOrder = 0, asId = FlowId ""} | a <- sortOn (\x -> (show (asSource x), show (asTarget x))) (scAssociations sc)]
         }
-    kind (NkActivity (Activity (AkSubprocess inner) l)) = NkActivity (Activity (AkSubprocess (scope inner)) l)
+    kind (NkActivity (Activity (AkSubprocess k inner) l)) = NkActivity (Activity (AkSubprocess k (scope inner)) l)
     kind other = other
 
 -- | The first concrete thing that differs, so the report names something the
 -- reader can look at rather than "graphs differ".
+--
+-- __This has to cover every field the equality test covers.__ The caller has
+-- already established that the two graphs differ; anything this function
+-- cannot see produces "the two graphs differ, and this function cannot say
+-- where", which tells the reader nothing and tells the maintainer only that
+-- the bug is here. The last clause exists to make that failure loud rather
+-- than plausible.
 difference :: SemanticGraph -> SemanticGraph -> Text
 difference a b =
-  headOr "no difference found" $
+  headOr "the difference is in a field this check does not inspect" $
     [ "processes: " <> tshow (map (unProcessId . procId) (sgProcesses a))
         <> " became " <> tshow (map (unProcessId . procId) (sgProcesses b))
     | map procId (sgProcesses a) /= map procId (sgProcesses b)
     ]
-      ++ concat (zipWith scopeDiff (map procScope (sgProcesses a)) (map procScope (sgProcesses b)))
+      ++ concat (zipWith processDiff (sgProcesses a) (sgProcesses b))
       ++ ["declarations differ" | (sgMessages a, sgSignals a, sgErrors a, sgEscalations a) /= (sgMessages b, sgSignals b, sgErrors b, sgEscalations b)]
       ++ ["the collaboration differs" | sgCollaboration a /= sgCollaboration b]
   where
+    processDiff p q =
+      [ "process '" <> unProcessId (procId p) <> "' is named " <> tshow (procName p)
+          <> " and came back " <> tshow (procName q)
+      | procName p /= procName q
+      ]
+        ++ [ "the documentation of process '" <> unProcessId (procId p) <> "' changed"
+           | procDoc p /= procDoc q
+           ]
+        ++ [ "process '" <> unProcessId (procId p) <> "' changed from "
+               <> executable (procExecutable p) <> " to " <> executable (procExecutable q)
+           | procExecutable p /= procExecutable q
+           ]
+        ++ [ "lanes: " <> tshow (map (unLaneId . laneId) (procLanes p))
+               <> " became " <> tshow (map (unLaneId . laneId) (procLanes q))
+           | map laneId (procLanes p) /= map laneId (procLanes q)
+           ]
+        ++ [ "lane '" <> unLaneId (laneId l) <> "' changed"
+           | (l, m) <- zip (procLanes p) (procLanes q)
+           , l /= m
+           ]
+        ++ scopeDiff (procScope p) (procScope q)
+
+    -- Recurses: a subprocess is a scope of its own, and a difference buried in
+    -- one is exactly the difference the flat comparison used to report as a
+    -- changed step without saying what about it changed.
     scopeDiff x y =
       [ "nodes: " <> tshow (map (unNodeId . fnId) (scNodes x)) <> " became " <> tshow (map (unNodeId . fnId) (scNodes y))
       | map fnId (scNodes x) /= map fnId (scNodes y)
@@ -361,16 +396,39 @@ difference a b =
         ++ [ "connections: " <> tshow (edges x) <> " became " <> tshow (edges y)
            | edges x /= edges y
            ]
-        ++ [ "step '" <> unNodeId (fnId n) <> "' changed"
-           | (n, m) <- zip (scNodes x) (scNodes y)
-           , n /= m
-           ]
+        ++ concat
+          [ nodeDiff n m
+          | (n, m) <- zip (scNodes x) (scNodes y)
+          , n /= m
+          ]
         ++ [ "the connection " <> tshow (unNodeId (sfSource f), unNodeId (sfTarget f)) <> " changed"
            | (f, h) <- zip (scFlows x) (scFlows y)
            , f /= h
            ]
-        ++ ["artifacts differ" | scArtifacts x /= scArtifacts y]
+        ++ [ "the lane of step '" <> unNodeId (fnId n) <> "' changed"
+           | (n, m) <- zip (scNodes x) (scNodes y)
+           , fnLane n /= fnLane m
+           ]
+        ++ [ "artifact '" <> unArtifactId (artId p') <> "' changed"
+           | (p', q') <- zip (scArtifacts x) (scArtifacts y)
+           , p' /= q'
+           ]
+        ++ [ "artifacts: " <> tshow (map (unArtifactId . artId) (scArtifacts x))
+               <> " became " <> tshow (map (unArtifactId . artId) (scArtifacts y))
+           | map artId (scArtifacts x) /= map artId (scArtifacts y)
+           ]
         ++ ["associations differ" | scAssociations x /= scAssociations y]
+
+    nodeDiff n m = case (subScope n, subScope m) of
+      (Just inner, Just inner') | inner /= inner' ->
+        map (\d -> "inside '" <> unNodeId (fnId n) <> "': " <> d) (scopeDiff inner inner')
+      _ -> ["step '" <> unNodeId (fnId n) <> "' changed"]
+
+    subScope n = case fnKind n of
+      NkActivity (Activity (AkSubprocess _ inner) _) -> Just inner
+      _ -> Nothing
+
+    executable e = if e then "executable" else "non-executable" :: Text
     edges sc = [(unNodeId (sfSource f), unNodeId (sfTarget f)) | f <- scFlows sc]
     headOr d xs = case xs of
       (x : _) -> x
