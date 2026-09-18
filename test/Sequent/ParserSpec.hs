@@ -31,6 +31,39 @@ spec = do
       ]
         `shouldBe` [("a", False), ("b", True)]
 
+  describe "handlers, groups and stop" $ do
+    it "parses a handler block as an item, not a step" $
+      -- An item, because an event subprocess is reached by its trigger: put it
+      -- between two steps and those two steps stay connected to each other.
+      [(unLoc (shName h), shLabel h, length (shBody h)) | IHandler h <- items "process p { start s\nhandler rec \"Recover\" { start c\nend f } }"]
+        `shouldBe` [("rec", Just "Recover", 2)]
+
+    it "parses a group as a list of member names" $
+      [ (unLoc (sgrName g), sgrLabel g, map unLoc (membersOf g))
+      | IGroup g <- items "process p { start s\ntask a\ntask b\ngroup money \"Money\" { a b } }"
+      ]
+        `shouldBe` [("money", Just "Money", ["a", "b"])]
+
+    it "keeps a comment written between two group members" $
+      [ length (sgrMembers g)
+      | IGroup g <- items "process p { start s\ntask a\ntask b\ngroup money { a\n# and\nb } }"
+      ]
+        `shouldBe` [3]
+
+    it "parses 'stop' as a step" $
+      [() | IStep (StStop _) <- items "process p { start s\ntask a\nstop }"] `shouldBe` [()]
+
+    it "parses 'noninterrupting' as a property" $
+      props "start c { message m\nnoninterrupting }" `shouldBe` [PMessage "m", PNonInterrupting]
+
+    it "rejects the new keywords as step names" $
+      mapM_
+        ( \w -> case parseFile "t" ("process p { task " <> w <> " }") of
+            Left (d : _) -> T.unpack (diagMessage d) `shouldSatisfy` isInfixOf "reserved word"
+            _ -> expectationFailure ("expected a parse error for " <> T.unpack w)
+        )
+        ["handler", "group", "stop"]
+
   describe "steps" $ do
     it "reads a step keyword and a name" $
       [(unLoc (snKind n), unLoc (snName n)) | n <- nodes "process p { service s \"Do it\" }"]

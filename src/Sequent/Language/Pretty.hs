@@ -185,6 +185,10 @@ item i = case i of
           <> labelOf (bdLabel b)
       )
       (items (bdBody b))
+  IHandler h ->
+    block ("handler " <> unLoc (shName h) <> labelOf (shLabel h)) (items (shBody h))
+  IGroup g ->
+    block ("group " <> unLoc (sgrName g) <> labelOf (sgrLabel g)) (members (sgrMembers g))
   INote n -> ["note " <> unLoc (snoName n) <> " " <> str (snoText n) <> " on " <> unLoc (snoOn n)]
   IData d ->
     [ "data "
@@ -206,12 +210,22 @@ item i = case i of
 step :: SStep -> [Text]
 step s = case s of
   StGoto n _ -> ["goto " <> unLoc n]
+  StStop _ -> ["stop"]
   StNode n
     | null (snProps n) -> [nodeHeader n]
     | otherwise -> block (nodeHeader n) (props (snProps n))
   StSubprocess sub ->
     block ("subprocess " <> unLoc (ssName sub) <> labelOf (ssLabel sub)) (items (ssBody sub))
   StGateway g -> block (gatewayHeader g) (branches (sgBranches g))
+
+-- | A group's members, one per line: a long membership list is the thing a
+-- diff is most likely to touch, and one name per line keeps that diff to the
+-- line that changed.
+members :: [SGroupItem] -> [Group]
+members = groups False . map piece
+  where
+    piece (GComment c) = PComment' c
+    piece (GMember n) = PLines [unLoc n]
 
 props :: [SProp] -> [Group]
 props = groups False . map piece
@@ -278,6 +292,7 @@ prop (SProp _ b) = case b of
   PDecision v -> "decision " <> str v
   PCalls v -> "calls " <> str v
   PPropagate -> "propagate"
+  PNonInterrupting -> "noninterrupting"
   PEach v coll sq -> "each " <> key v <> " in " <> str coll <> (if sq then " sequential" else "")
   PCollect v src -> "collect " <> key v <> " from " <> str src
   PMessage v -> "message " <> key v

@@ -185,6 +185,7 @@ reservedWords =
     , "correlation", "doc", "lane", "on", "catch", "noninterrupting", "as"
     , "note", "data", "from", "to", "pin", "at", "flow", "goto", "join"
     , "branch", "priority", "when", "otherwise", "subprocess", "escalation"
+    , "handler", "group", "stop"
     , "type", "retries", "input", "output", "header", "form", "assignee"
     , "groups", "users", "due", "expression", "result", "decision", "calls"
     , "propagate", "each", "in", "collect", "timer", "link", "terminate"
@@ -341,11 +342,14 @@ item =
     [ docItem
     , laneItem
     , boundaryItem
+    , handlerItem
+    , groupItem
     , noteItem
     , dataItem
     , pinItem
     , flowItem
     , gotoItem
+    , stopItem
     , IStep . StGateway <$> gatewayDecl
     , IStep . StSubprocess <$> subprocessDecl
     , IStep . StNode <$> nodeDecl
@@ -379,6 +383,31 @@ boundaryItem = do
     body <- braces (withComments IComment item)
     pure (h, tg, ni, nm, lbl, body)
   pure (IBoundary (SBoundary h tg ni nm lbl body s))
+
+-- | @handler recover "Recover" { … }@ — an event subprocess. The trigger is
+-- the start event's, inside the block; nothing on the header line repeats it.
+handlerItem :: P SItem
+handlerItem = do
+  ((n, lbl, body), s) <- spanned $ do
+    kw "handler"
+    n <- ident
+    lbl <- optional stringLit
+    body <- braces (withComments IComment item)
+    pure (n, lbl, body)
+  pure (IHandler (SHandler n lbl body s))
+
+-- | @group money "Payment steps" { charge refund }@ — a list of member names,
+-- not a list of items: a group does not contain its members, it draws a
+-- rectangle round them (ART-005).
+groupItem :: P SItem
+groupItem = do
+  ((n, lbl, ms), s) <- spanned $ do
+    kw "group"
+    n <- ident
+    lbl <- optional stringLit
+    ms <- braces (withComments GComment (GMember <$> ident))
+    pure (n, lbl, ms)
+  pure (IGroup (SGroup n lbl ms s))
 
 noteItem :: P SItem
 noteItem = do
@@ -428,6 +457,11 @@ gotoItem :: P SItem
 gotoItem = do
   (n, s) <- spanned (kw "goto" *> ident)
   pure (IStep (StGoto n s))
+
+stopItem :: P SItem
+stopItem = do
+  (_, s) <- spanned (kw "stop")
+  pure (IStep (StStop s))
 
 guardWord :: P SGuard
 guardWord = (GWhen <$> (kw "when" *> stringLit)) <|> (GOtherwise <$ kw "otherwise")
@@ -530,6 +564,7 @@ propBody =
     , PDecision <$> (kw "decision" *> stringLit)
     , PCalls <$> (kw "calls" *> stringLit)
     , PPropagate <$ kw "propagate"
+    , PNonInterrupting <$ kw "noninterrupting"
     , eachProp
     , PCollect <$> (kw "collect" *> identOrString) <*> (kw "from" *> stringLit)
     , PMessage <$> (kw "message" *> declRef)

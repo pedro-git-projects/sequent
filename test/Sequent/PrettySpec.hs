@@ -25,6 +25,28 @@ spec = do
       let src = "process p { start s xor g { branch \"y\" otherwise { and h { branch { task a } branch { task b } } } branch \"n\" when \"=n\" } end e }"
        in fmt (fmt src) `shouldBe` fmt src
 
+  describe "handlers, groups and stop" $ do
+    it "writes a handler as a block" $
+      fmt "process p{handler h \"H\"{start c\nend f}}"
+        `shouldBe` "process p {\n  handler h \"H\" {\n    start c\n    end f\n  }\n}\n"
+
+    it "writes a group's members one per line" $
+      -- A membership list is the thing a diff is most likely to touch, and one
+      -- name per line keeps that diff to the line that changed.
+      fmt "process p{group g \"G\"{a b c}}"
+        `shouldBe` "process p {\n  group g \"G\" {\n    a\n    b\n    c\n  }\n}\n"
+
+    it "writes 'stop' on its own line" $
+      T.lines (fmt "process p{task a stop}") `shouldSatisfy` elem "  stop"
+
+    it "keeps 'noninterrupting' in the property block" $
+      T.lines (fmt "process p{start c{message m noninterrupting}}")
+        `shouldSatisfy` elem "    noninterrupting"
+
+    it "is a fixed point on all three" $
+      let src = "process p { start s\ntask a\nstop\nhandler h { start c { message m\nnoninterrupting }\nend f }\ngroup g \"G\" { a } }"
+       in fmt (fmt src) `shouldBe` fmt src
+
   describe "round-tripping" $ do
     it "reparses to the same tree modulo spans" $
       let src = "process p { start s\ntask a \"A\"\nend e }"
