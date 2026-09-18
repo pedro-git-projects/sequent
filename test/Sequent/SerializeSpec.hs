@@ -35,6 +35,56 @@ spec = do
     it "marks the process executable" $
       attr "isExecutable" (processOf "start s\nend e") `shouldBe` Just "true"
 
+  describe "event subprocesses, groups and interrupting flags" $ do
+    let handlerSrc =
+          "error e \"E\"\nprocess p { start s\ntask t\nend fin\nhandler h \"H\" { start c { error e }\ntask u\nend f } }"
+        nonIntSrc =
+          "message m \"w\"\nprocess p { start s\ntask t\nend fin\nhandler h { start c { message m\nnoninterrupting }\ntask u\nend f } }"
+
+    it "writes an event subprocess as triggeredByEvent" $
+      (elementNameFor handlerSrc "Activity_h", attr "triggeredByEvent" (byId "Activity_h" handlerSrc))
+        `shouldBe` ("bpmn:subProcess", Just "true")
+
+    it "nests the handler's steps inside it" $
+      map xmlName (xmlChildren (byId "Activity_h" handlerSrc))
+        `shouldSatisfy` \ns -> "bpmn:startEvent" `elem` ns && "bpmn:endEvent" `elem` ns
+
+    it "connects an event subprocess to nothing" $
+      -- It runs when its start event fires. A sequence flow into or out of it
+      -- would be a different construct with the same drawing.
+      map (\f -> (attr "sourceRef" f, attr "targetRef" f)) (descendantsNamed "bpmn:sequenceFlow" (processOf handlerSrc))
+        `shouldSatisfy` all (\(a, b) -> a /= Just "Activity_h" && b /= Just "Activity_h")
+
+    it "omits isInterrupting when the start event interrupts" $
+      -- It defaults to true. Writing it on every start event in every file
+      -- would be noise in the diff of every process that has none.
+      attr "isInterrupting" (byId "StartEvent_c" handlerSrc) `shouldBe` Nothing
+
+    it "writes isInterrupting=false when it does not" $
+      attr "isInterrupting" (byId "StartEvent_c" nonIntSrc) `shouldBe` Just "false"
+
+    it "writes a group and the category value that holds its text" $ do
+      let src = "start s\ntask a\nend e\ngroup money \"Money moves\" { a }"
+          root = xmlOf src
+          cat = head (childrenNamed "bpmn:category" root)
+          val = head (childrenNamed "bpmn:categoryValue" cat)
+      (attr "categoryValueRef" (byId "Group_money" src), attr "value" val)
+        `shouldBe` (attr "id" val, Just "Money moves")
+
+    it "puts the category before the process that refers to it" $
+      map xmlName (xmlChildren (xmlOf "start s\ntask a\nend e\ngroup g \"G\" { a }"))
+        `shouldSatisfy` \ns -> indexOf "bpmn:category" ns < indexOf "bpmn:process" ns
+
+    it "gives the group a shape that holds its members" $ do
+      -- ART-005: the rectangle is the members' bounding box plus padding, and
+      -- the importer reads membership back out of exactly that.
+      let src = "start s\ntask a\nend e\ngroup g \"G\" { a }"
+          bounds = boundsIn (planeOf src)
+      case (lookup "Group_g" bounds, lookup "Activity_a" bounds) of
+        (Just (gx, gy, gw, gh), Just (ax, ay, aw, ah)) ->
+          (gx < ax, gy < ay, gx + gw > ax + aw, gy + gh > ay + ah) `shouldBe` (True, True, True, True)
+        _ -> expectationFailure "expected a shape for the group and its member"
+
   describe "flow nodes" $ do
     it "uses the right BPMN element for each step keyword" $
       map (elementNameFor "start s\nservice a { type \"t\" }\nuser b\nmanual c\nend e")
@@ -345,6 +395,27 @@ elementNameFor src i = maybe "?" xmlName (findById i (xmlOf src))
 allBounds :: Xml -> [(Int, Int, Int, Int)]
 allBounds plane =
   mapMaybe toTuple (descendantsNamed "dc:Bounds" plane)
+  where
+    toTuple e = do
+      x <- num "x" e
+      y <- num "y" e
+      w <- num "width" e
+      h <- num "height" e
+      pure (x, y, w, h)
+    num k e = attr k e >>= readInt
+    readInt t = case reads (T.unpack t) of
+      [(n, "")] -> Just n
+      _ -> Nothing
+
+-- | Each shape's element id with its bounds, so a test can compare two of them.
+boundsIn :: Xml -> [(Text, (Int, Int, Int, Int))]
+boundsIn plane =
+  [ (el, b)
+  | sh <- descendantsNamed "bpmndi:BPMNShape" plane
+  , Just el <- [attr "bpmnElement" sh]
+  , bnd <- childrenNamed "dc:Bounds" sh
+  , Just b <- [toTuple bnd]
+  ]
   where
     toTuple e = do
       x <- num "x" e

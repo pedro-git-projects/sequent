@@ -33,6 +33,8 @@ module Sequent.Bpmn.Id
   , diId
   , defId
   , dataObjectIdFor
+  , categoryIdFor
+  , categoryValueIdFor
     -- * Sanitisation
   , sanitize
   , isValidNCName
@@ -67,6 +69,7 @@ data IdClass
   | IcDataObject
   | IcDataObjectRef
   | IcTextAnnotation
+  | IcGroup
   | IcMessage
   | IcSignal
   | IcError
@@ -93,6 +96,7 @@ classPrefix c = case c of
   IcDataObject -> "DataObject_"
   IcDataObjectRef -> "DataObjectReference_"
   IcTextAnnotation -> "TextAnnotation_"
+  IcGroup -> "Group_"
   IcMessage -> "Message_"
   IcSignal -> "Signal_"
   IcError -> "Error_"
@@ -153,6 +157,23 @@ defId t = t <> "_def"
 dataObjectIdFor :: Text -> Text
 dataObjectIdFor refId =
   classPrefix IcDataObject <> fromMaybe refId (T.stripPrefix (classPrefix IcDataObjectRef) refId)
+
+-- | The @bpmn:category@ and @bpmn:categoryValue@ behind a @bpmn:group@.
+--
+-- BPMN spends three elements on one group: the group points at a category
+-- value, the category value holds the text, and a category holds the value.
+-- Only the group is declared in source, so the other two ids are derived from
+-- it for the same reason 'dataObjectIdFor' derives its own — one declaration
+-- gets one allocated id, and nothing in the file can collide with a name the
+-- author never wrote.
+categoryIdFor :: Text -> Text
+categoryIdFor groupId = "Category_" <> groupBody groupId
+
+categoryValueIdFor :: Text -> Text
+categoryValueIdFor groupId = "CategoryValue_" <> groupBody groupId
+
+groupBody :: Text -> Text
+groupBody groupId = fromMaybe groupId (T.stripPrefix (classPrefix IcGroup) groupId)
 
 -- | Coerce arbitrary text into an XML @NCName@ body. Characters outside the
 -- @NCName@ set become @_@; a leading digit or @-@ or @.@ gets an underscore in

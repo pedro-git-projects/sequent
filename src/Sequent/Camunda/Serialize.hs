@@ -25,7 +25,7 @@ import Data.Maybe (maybeToList)
 import Data.Text (Text)
 import qualified Data.Text as T
 
-import Sequent.Bpmn.Id (dataObjectIdFor, defId, diId)
+import Sequent.Bpmn.Id (categoryIdFor, categoryValueIdFor, dataObjectIdFor, defId, diId)
 import Sequent.Bpmn.Semantic
 import Sequent.Camunda.Model
 import Sequent.Camunda.Xml
@@ -82,6 +82,35 @@ rootElements g =
     ++ map signalElement (sgSignals g)
     ++ map errorElement (sgErrors g)
     ++ map escalationElement (sgEscalations g)
+    ++ map categoryElement (allGroups g)
+
+-- | Every group in the file, in the order its scope declares it. A group's
+-- text is a root element in BPMN, so this has to reach into every scope of
+-- every process to collect them before any process is written.
+allGroups :: SemanticGraph -> [Artifact]
+allGroups g =
+  [ a
+  | p <- sgProcesses g
+  , sc <- allScopes (procScope p)
+  , a <- scArtifacts sc
+  , artKind a == AkGroup
+  ]
+
+-- | One @category@ per group, holding the one @categoryValue@ the group points
+-- at. BPMN allows a category to hold several values and to be shared between
+-- groups; nothing reads that structure, and one category per group keeps the
+-- ids derivable from the group's own (see "Sequent.Bpmn.Id").
+categoryElement :: Artifact -> Element
+categoryElement a =
+  elem_
+    "bpmn:category"
+    [("id", categoryIdFor gid)]
+    [ leaf
+        "bpmn:categoryValue"
+        ([("id", categoryValueIdFor gid)] ++ [("value", n) | Just n <- [artName a]])
+    ]
+  where
+    gid = unArtifactId (artId a)
 
 messageElement :: MessageDef -> Element
 messageElement m =
@@ -186,8 +215,9 @@ scopeChildren :: Scope -> [Element]
 scopeChildren sc =
   map (nodeElement sc) (scNodes sc)
     ++ map flowElement (scFlows sc)
-    ++ concatMap dataElements [a | a <- scArtifacts sc, artKind a /= AkTextAnnotation]
+    ++ concatMap dataElements [a | a <- scArtifacts sc, artKind a `notElem` [AkTextAnnotation, AkGroup]]
     ++ map annotationElement [a | a <- scArtifacts sc, artKind a == AkTextAnnotation]
+    ++ map groupElement [a | a <- scArtifacts sc, artKind a == AkGroup]
     ++ map associationElement (annotationAssociations sc)
 
 nodeElement :: Scope -> FlowNode -> Element
@@ -221,13 +251,13 @@ tagFor k = case k of
   NkGateway GwEventBased -> "bpmn:eventBasedGateway"
   NkGateway GwComplex -> "bpmn:complexGateway"
   NkEvent (EventSpec fl _) -> case fl of
-    EvStart -> "bpmn:startEvent"
+    EvStart _ -> "bpmn:startEvent"
     EvEnd -> "bpmn:endEvent"
     EvIntermediateCatch -> "bpmn:intermediateCatchEvent"
     EvIntermediateThrow -> "bpmn:intermediateThrowEvent"
     EvBoundary _ -> "bpmn:boundaryEvent"
   NkActivity a -> case acKind a of
-    AkSubprocess _ -> "bpmn:subProcess"
+    AkSubprocess _ _ -> "bpmn:subProcess"
     AkCallActivity -> "bpmn:callActivity"
     AkTask t -> case t of
       TtAbstract -> "bpmn:task"
@@ -243,7 +273,12 @@ kindAttrs :: Scope -> FlowNode -> [Attr]
 kindAttrs sc n = case fnKind n of
   NkEvent (EventSpec (EvBoundary att) _) ->
     [("attachedToRef", unNodeId (baHost att))]
-      ++ [("cancelActivity", "false") | not (baInterrupting att)]
+      ++ [("cancelActivity", "false") | not (isInterrupting (baInterrupting att))]
+  -- Only written when false: @isInterrupting@ defaults to true, and a plain
+  -- process start carrying it would be noise in every file.
+  NkEvent (EventSpec (EvStart i) _) ->
+    [("isInterrupting", "false") | not (isInterrupting i)]
+  NkActivity (Activity (AkSubprocess SpEventSub _) _) -> [("triggeredByEvent", "true")]
   NkActivity (Activity (AkTask (TtReceive (Just m))) _) -> [("messageRef", unNodeId m)]
   NkGateway k
     | k `elem` [GwExclusive, GwInclusive, GwComplex]
@@ -259,7 +294,7 @@ flowRefs sc i =
     ++ [textElem "bpmn:outgoing" [] (unFlowId (sfId f)) | f <- scFlows sc, sfSource f == i]
 
 subprocessChildren :: NodeKind -> [Element]
-subprocessChildren (NkActivity (Activity (AkSubprocess inner) _)) = scopeChildren inner
+subprocessChildren (NkActivity (Activity (AkSubprocess _ inner) _)) = scopeChildren inner
 subprocessChildren _ = []
 
 eventDefinitions :: FlowNode -> [Element]
@@ -395,9 +430,22 @@ annotationElement a =
 -- | A data object becomes a reference plus the object it refers to. Both are
 -- BPMN @flowElement@s, not artifacts, which is why they are emitted with the
 -- sequence flows rather than after them.
+-- | A group: a rectangle pointing at the category value that holds its text.
+-- Which elements it encloses is not recorded — BPMN has no membership relation
+-- — so a reader recovers it from the geometry, and this compiler's geometry
+-- puts exactly the members ART-005 was given inside the rectangle.
+groupElement :: Artifact -> Element
+groupElement a =
+  leaf
+    "bpmn:group"
+    ( [("id", unArtifactId (artId a))]
+        ++ [("categoryValueRef", categoryValueIdFor (unArtifactId (artId a)))]
+    )
+
 dataElements :: Artifact -> [Element]
 dataElements a = case artKind a of
   AkTextAnnotation -> []
+  AkGroup -> []
   AkDataObject ->
     [ leaf
         "bpmn:dataObjectReference"
@@ -529,7 +577,7 @@ diagramElement g geo =
 
     markerAttrs n = case fnKind n of
       NkGateway GwExclusive -> [("isMarkerVisible", "true")]
-      NkActivity (Activity (AkSubprocess _) _) -> [("isExpanded", "true")]
+      NkActivity (Activity (AkSubprocess _ _) _) -> [("isExpanded", "true")]
       _ -> []
 
     shape i r extra =
