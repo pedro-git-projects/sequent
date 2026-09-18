@@ -51,7 +51,7 @@ nodeSize fm subSize boundaryCount n = case fnKind n of
   NkEvent _ -> (evSize, evSize)
   NkGateway _ -> (gwSize, gwSize)
   NkActivity a -> case acKind a of
-    AkSubprocess _ -> fromMaybe (subMinW, subMinH) (subSize (fnId n))
+    AkSubprocess _ _ -> fromMaybe (subMinW, subMinH) (subSize (fnId n))
     _ ->
       let (w0, h0) = activityGrowthLadder fm (nodeHasMarker n) (fromMaybe "" (fnName n))
           w1 = max w0 (hostWidthForBoundaries boundaryCount)

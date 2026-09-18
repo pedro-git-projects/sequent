@@ -128,8 +128,8 @@ shuffleGraph k g =
         }
     reverseIf sc = if odd k then reverse (scNodes sc) else scNodes sc
     shuffleNode n = case fnKind n of
-      NkActivity a@Activity {acKind = AkSubprocess inner} ->
-        n {fnKind = NkActivity a {acKind = AkSubprocess (shuffleScope inner)}}
+      NkActivity a@Activity {acKind = AkSubprocess k inner} ->
+        n {fnKind = NkActivity a {acKind = AkSubprocess k (shuffleScope inner)}}
       _ -> n
 
 rotate :: Int -> [a] -> [a]

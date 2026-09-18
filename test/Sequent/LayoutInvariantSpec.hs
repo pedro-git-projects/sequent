@@ -67,7 +67,7 @@ spec = forM_ corpus $ \(name, src) -> describe name $ do
       plainActivity n = case Map.lookup n byId of
         Just fn -> case fnKind fn of
           NkActivity a -> case acKind a of
-            AkSubprocess _ -> False
+            AkSubprocess _ _ -> False
             _ -> True
           _ -> False
         Nothing -> False

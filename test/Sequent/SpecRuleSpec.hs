@@ -669,6 +669,90 @@ spec = do
        in (length (nub (map rW pools)), length (nub (map rX pools))) `shouldBe` (1, 1)
 
   describe "§H labels and artifacts" $ do
+    it "test_ART_005_a_group_is_its_members_bounding_box_plus_padding" $
+      -- A group is drawn round its members and constrains nothing: it is
+      -- computed after placement, and moving a node to satisfy a group would
+      -- distort the diagram for no semantic gain.
+      let l = layoutOf "start s\ntask a\ntask b\ntask c\nend e\ngroup g \"G\" { a b }"
+          box = artifactOf l "Group_g"
+          want = inflate containerPadY (unionRects [shapeOf l "Activity_a", shapeOf l "Activity_b"])
+       in box `shouldBe` want
+
+    it "test_ART_005_a_group_does_not_move_a_node" $
+      -- Relative to the flow, not to the canvas. The group's rectangle sticks
+      -- out past the topmost node, so LAYOUT-031's margin pass translates the
+      -- whole diagram to keep it on the page — which is the one effect a group
+      -- is allowed to have, and is not a layout constraint: nothing moved with
+      -- respect to anything else.
+      let relative src =
+            let l = layoutOf src
+                origin = shapeOf l "StartEvent_s"
+             in [ (unNodeId n, rX r - rX origin, rY r - rY origin)
+                | (n, r) <- Map.toAscList (allShapes l)
+                ]
+       in relative "start s\ntask a\ntask b\nend e\ngroup g \"G\" { a }"
+            `shouldBe` relative "start s\ntask a\ntask b\nend e"
+
+    it "test_LAYOUT_035_an_event_subprocess_is_stacked_below_the_flow" $ do
+      -- Nothing flows into a handler, so the layering pass sees a disconnected
+      -- component and LAYOUT-034 would drop it wherever the ordering reached
+      -- it — for a handler, above the flow it handles.
+      let l = layoutOf handlerProcess
+          flowBottom = maximum (map rectBottom [shapeOf l "StartEvent_s", shapeOf l "Activity_t", shapeOf l "Event_fin"])
+      rY (shapeOf l "Activity_h") `shouldSatisfy` (> flowBottom)
+
+    it "test_LAYOUT_035_two_handlers_stack_in_canonical_order" $
+      let l = layoutOf twoHandlers
+       in (rY (shapeOf l "Activity_h1") < rY (shapeOf l "Activity_h2"), rX (shapeOf l "Activity_h1") == rX (shapeOf l "Activity_h2"))
+            `shouldBe` (True, True)
+
+    it "test_LAYOUT_006_an_event_subprocess_is_not_on_the_spine" $
+      -- It is on no path, so it is on no main path. Letting it join the spine
+      -- straightens the whole diagram against a container the reader's eye
+      -- never follows, and LAYOUT-007 then reports every real spine node as
+      -- off-axis.
+      let l = layoutOf handlerProcess
+          cy n = rectCenterY (shapeOf l n)
+       in (cy "StartEvent_s" == cy "Activity_t", cy "Activity_t" == cy "Event_fin")
+            `shouldBe` (True, True)
+
+    it "test_LAYOUT_035_a_handler_stays_inside_its_lane" $ do
+      -- An event subprocess is listed in a flowNodeRef like any other node, so
+      -- it belongs to a lane, and HC-003 keeps it there. "Below the flow"
+      -- therefore means below the flow of its own lane.
+      let l = layoutOf handlerInLane
+          lane = laneRectOf l "Lane_finance"
+      shapeOf l "Activity_oops" `shouldSatisfy` rectContains lane
+
+    it "test_LAYOUT_035_a_handler_in_an_upper_lane_stays_in_it" $ do
+      -- "Below the flow" is below the flow of the handler's own lane. A
+      -- handler in the first of two lanes is above the second lane's content
+      -- and has to be, so the rule cannot be stated over the whole diagram.
+      let l = layoutOf handlerInUpperLane
+      shapeOf l "Activity_oops" `shouldSatisfy` rectContains (laneRectOf l "Lane_sales")
+
+    it "test_LANE_003_a_lane_reaches_below_its_lowest_member" $ do
+      -- Measured from the lane's top to below its lowest member, not from the
+      -- content's height: a lane's top edge is fixed by the tiling, so content
+      -- that starts well down the lane needs the whole reach covered.
+      let l = layoutOf handlerInLane
+          lane = laneRectOf l "Lane_finance"
+      rectBottom lane `shouldSatisfy` (>= rectBottom (shapeOf l "Activity_oops"))
+
+    it "test_LANE_002_lanes_share_one_width_wide_enough_for_all_of_them" $ do
+      let l = layoutOf handlerInLane
+          ws = [rW (laneRectOf l i) | i <- ["Lane_sales", "Lane_finance"]]
+      (length (nub ws), all (\i -> rectRight (laneRectOf l "Lane_finance") >= rectRight (shapeOf l i)) ["Activity_oops", "Activity_approve"])
+        `shouldBe` (1, True)
+
+    it "test_LAYOUT_035_an_event_subprocess_claims_no_column_width" $
+      -- It is moved out of the flow afterwards, so a column sized to hold it
+      -- would leave a container-sized gap where it no longer is.
+      let withH = layoutOf handlerProcess
+          without = layoutOf "start s\ntask t\nend fin"
+       in map rX [shapeOf withH "StartEvent_s", shapeOf withH "Activity_t", shapeOf withH "Event_fin"]
+            `shouldBe` map rX [shapeOf without "StartEvent_s", shapeOf without "Activity_t", shapeOf without "Event_fin"]
+
     it "test_LABEL_003_an_external_label_is_measured_at_the_height_it_will_be_drawn" $
       -- BPMN DI carries a bounds rectangle; the renderer sets the element's
       -- own @name@ inside it. Measuring two lines and emitting a caption that
@@ -1140,6 +1224,38 @@ gapsBetween l names =
     rects = map (shapeOf l) names
 
 corridorYOf :: LayoutResult -> Text -> Int
+handlerInUpperLane :: Text
+handlerInUpperLane =
+  "error boom \"BOOM\"\nprocess p { lane sales \"Sales\" { start s\nservice qualify { type \"q\" }\n"
+    <> "handler oops { start c { error boom }\nservice fix { type \"f\" }\nend f } }\n"
+    <> "lane finance \"Finance\" { service approve { type \"a\" }\nend e } }"
+
+handlerInLane :: Text
+handlerInLane =
+  "error boom \"BOOM\"\nprocess p { lane sales \"Sales\" { start s\nservice qualify { type \"q\" } }\n"
+    <> "lane finance \"Finance\" { service approve { type \"a\" }\nend e\n"
+    <> "handler oops { start c { error boom }\nservice fix { type \"f\" }\nend f } } }"
+
+laneRectOf :: LayoutResult -> Text -> Rect
+laneRectOf l i = case Map.lookup (LaneId i) (geoLanes (lrGeometry l)) of
+  Just r -> r
+  Nothing -> error ("no lane " <> T.unpack i)
+
+handlerProcess :: Text
+handlerProcess =
+  "error e \"E\"\nprocess p { start s\ntask t\nend fin\nhandler h { start c { error e }\ntask u\nend f } }"
+
+twoHandlers :: Text
+twoHandlers =
+  "error e \"E\"\nmessage m \"w\"\nprocess p { start s\ntask t\nend fin\n"
+    <> "handler h1 { start c1 { error e }\nend f1 }\n"
+    <> "handler h2 { start c2 { message m }\nend f2 } }"
+
+artifactOf :: LayoutResult -> Text -> Rect
+artifactOf l i = case Map.lookup (ArtifactId i) (geoArtifacts (lrGeometry l)) of
+  Just r -> r
+  Nothing -> error ("no artifact " <> T.unpack i)
+
 corridorYOf l f = case rtPoints (routeOf l f) of
   (_ : p : _) -> ptY p
   _ -> 0

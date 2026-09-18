@@ -121,7 +121,7 @@ layoutScopeRecursive cfg laneOrder sc = merged
     children =
       [ (fnId n, scId inner, layoutScopeRecursive cfg [Nothing] inner)
       | n <- scNodes sc
-      , NkActivity (Activity (AkSubprocess inner) _) <- [fnKind n]
+      , NkActivity (Activity (AkSubprocess _ inner) _) <- [fnKind n]
       ]
     childBoxes = Map.fromList [(i, containerBox sid r) | (i, sid, r) <- children]
 
@@ -213,6 +213,90 @@ layoutScopeRecursive cfg laneOrder sc = merged
               , lrDiagnostics = lrDiagnostics acc ++ lrDiagnostics childResult
               , lrStructure = Map.union (lrStructure acc) (lrStructure childResult)
               }
+
+-- | LAYOUT-035: event subprocesses are stacked below everything else.
+--
+-- They are relocated rather than laid out in place because no sequence flow
+-- touches one. To the layering pass they are a disconnected component, and
+-- LAYOUT-034 drops disconnected components wherever the ordering happened to
+-- reach them — which for a handler means above the flow it handles, pushing
+-- the process the reader came for off its own axis.
+--
+-- Moving them costs nothing and breaks nothing: an element no edge reaches
+-- cannot be made to cross one, so the placement is free in the sense ART-005
+-- means. Stacking runs in canonical order, left edges align with the lane's
+-- (or the diagram's, with no lanes), and the gap is BRANCH_GAP_Y — the same
+-- gap that separates any two bands, because that is what these are.
+--
+-- Ordering matters twice. It runs __before the repair pass__, so that the lane
+-- a handler belongs to grows around it under LANE-003/004 rather than being
+-- asked to contain a box that arrived after it was sized; and before
+-- 'placeChild', which offsets each inner scope from its container's final
+-- rectangle, so moving the container carries its contents with it.
+relocateHandlers :: Scope -> Geometry -> Geometry
+relocateHandlers sc geo
+  | null handlers = geo
+  | otherwise = moved {geoShapes = foldl' place (geoShapes moved) stacked}
+  where
+    handlers = [n | n <- scNodes sc, isEventSubprocess n]
+    handlerIds = map fnId handlers
+    sizes = Map.fromList [(fnId n, box) | n <- handlers, Just box <- [Map.lookup (fnId n) (geoShapes geo)]]
+
+    -- The diagram as it reads without them, which is what they go below.
+    without = geo {geoShapes = foldr Map.delete (geoShapes geo) handlerIds}
+    rest = geometryBounds without
+    whole = geometryBounds geo
+
+    -- Reclaim the space the handlers were occupying above and to the left of
+    -- the flow. Whole grid units only, and never more than is actually free,
+    -- so HC-011 survives and nothing crosses the diagram margin.
+    moved = translateGeometry (back (rX rest - rX whole)) (back (rY rest - rY whole)) without
+    back free = negate (u * (max 0 free `div` u))
+
+    -- With lanes, "below the flow" means below the flow /of the handler's own
+    -- lane/: an event subprocess is listed in a @flowNodeRef@ like any other
+    -- node, so it belongs to a lane and HC-003 keeps it there. The lane then
+    -- grows around it, which is why this runs before the repair pass.
+    movedShapes = geoShapes moved
+    laneContent l =
+      [ r
+      | n <- scNodes sc
+      , not (isEventSubprocess n)
+      , fnLane n == l
+      , Just r <- [Map.lookup (fnId n) movedShapes]
+      ]
+
+    baseFor l = case laneContent l of
+      [] -> geometryBounds moved
+      rs -> unionRects rs
+
+    -- Left edge: the lane's own, inset by its padding, so a stack of handlers
+    -- lines up with the lane rather than with whichever of its steps happens
+    -- to be furthest left. Without lanes it is the diagram's left edge.
+    --
+    -- Rounded up to the grid: a container's width is an even number of grid
+    -- units (LAYOUT-019), so a left edge on the grid puts its centre on the
+    -- grid too, which is what HC-011 checks.
+    leftFor l = ceilU $ case l >>= (`Map.lookup` geoLanes moved) of
+      Just lane -> rX lane + containerPadX
+      Nothing -> rX (baseFor l)
+
+    -- Handlers of one lane stack under each other; each lane starts again from
+    -- its own content.
+    stacked = concatMap perLane (dedupLanes (map fnLane handlers))
+    perLane l =
+      go (leftFor l) (rectBottom (baseFor l)) [fnId n | n <- handlers, fnLane n == l]
+
+    go _ _ [] = []
+    go left top (i : is) = case Map.lookup i sizes of
+      Nothing -> go left top is
+      Just box ->
+        let y = ceilU (top + branchGapY)
+         in (i, Rect left y (rW box) (rH box)) : go left (y + rH box) is
+
+    dedupLanes = foldr (\l acc -> if l `elem` acc then acc else l : acc) []
+
+    place acc (i, box) = Map.insert i box acc
 
 mergeGeometry :: Geometry -> Geometry -> Geometry
 mergeGeometry a b =
@@ -407,8 +491,10 @@ layoutOneScope cfg laneOrder sc subSize subAxis
             , geoArtifacts = artifacts
             }
 
-        -- Phases 10 and 12.
-        repaired = repairCollisions sc geomA
+        -- Phases 10 and 12. LAYOUT-035 runs first so that the lane a handler
+        -- belongs to grows around it here (LANE-004) rather than being asked
+        -- to contain a box that arrived after it was sized (HC-003).
+        repaired = repairCollisions sc (relocateHandlers sc geomA)
         portsOf fid = (sourcePort ports fid, targetPort ports fid)
         geomB =
           anchorPins
@@ -456,6 +542,7 @@ layoutOneScope cfg laneOrder sc subSize subAxis
             , viRoutes = geoRoutes geomB
             , viLabels = geoLabels geomB
             , viLanes = geoLanes geomB
+            , viArtifacts = geoArtifacts geomB
             , viPorts = ports
             , viSpine = rrSpine regions
             , viAxis = axisMap
@@ -805,7 +892,23 @@ placeArtifacts font sc shapes = (Map.fromList rects, Map.fromList routes)
                   else rectBottom hostRect + artifactGap
            in (art, a, Rect x y w h) : go (x + w + 2 * u) rest
 
-    rects = [(artId art, r) | (art, _, r, _, _) <- placements]
+    rects = [(artId art, r) | (art, _, r, _, _) <- placements] ++ groupRects
+
+    -- ART-005: a group is the bounding box of its members plus CONTAINER_PAD_Y
+    -- on every side, computed after placement and constraining nothing. It is
+    -- the one artifact with no host and no association: it is drawn round its
+    -- members rather than attached to one of them, so it takes no gutter and
+    -- joins no row.
+    --
+    -- A group whose members were all laid out elsewhere — in a subprocess, say
+    -- — has no box here and is dropped rather than drawn round nothing.
+    groupRects =
+      [ (artId a, inflate containerPadY (unionRects ms))
+      | a <- scArtifacts sc
+      , artKind a == AkGroup
+      , let ms = [r | m <- artMembers a, Just r <- [Map.lookup m shapes]]
+      , not (null ms)
+      ]
 
     routes =
       [ ( asId a
@@ -822,6 +925,11 @@ placeArtifacts font sc shapes = (Map.fromList rects, Map.fromList routes)
     sizeOf art = case artKind art of
       AkDataObject -> (dataW, dataH)
       AkDataStore -> (storeW, storeH)
+      -- A group has no association, so it never reaches a gutter row and never
+      -- asks for a size: 'groupRects' derives its rectangle from its members.
+      -- The case exists so that a group which somehow acquired one would be
+      -- given a harmless box rather than crash the formatter.
+      AkGroup -> (dataW, dataH)
       -- LABEL-010: the text sits inside the annotation with LABEL_PAD around it
       -- and a bracket band down the left. Two separate things have to fit: the
       -- width comes from the text, and the height from the text re-wrapped at

@@ -327,7 +327,13 @@ detectRegions large a layers =
     -- LAYOUT-006: the axis chain. Every node whose branch holds the axis, all
     -- the way down the region tree, sorted by layer — which is the order a
     -- reader follows it in.
-    spine = byLayer layers (Set.toList (Set.fromList (collect rootBranch)))
+    -- LAYOUT-006: the spine is the main path through the process, so an event
+    -- subprocess is never on it. Nothing flows into one, which makes it a
+    -- disconnected component of the root branch and would otherwise put a
+    -- container the reader's eye never follows on the axis the whole diagram
+    -- is straightened against (LAYOUT-007).
+    spine = byLayer layers (Set.toList (Set.fromList (filter onFlow (collect rootBranch))))
+    onFlow n = maybe True (not . isEventSubprocess) (Map.lookup n byId)
     collect b =
       brNodes b
         ++ concat

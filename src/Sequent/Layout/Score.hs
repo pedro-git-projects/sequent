@@ -199,7 +199,7 @@ scoreGeometry si =
 
     uniformitySized n = case fnKind n of
       NkActivity a -> case acKind a of
-        AkSubprocess _ -> False
+        AkSubprocess _ _ -> False
         _ -> not (hasBoundary (fnId n))
       _ -> False
     hasBoundary h = any (\x -> fmap baHost (boundaryHost x) == Just h) (scNodes sc)
@@ -366,7 +366,7 @@ antiPatterns si = orderViolations (concat [ap001, ap003, ap005, ap008, ap010, ap
           | x <- scNodes sc
           , NkActivity a <- [fnKind x]
           , case acKind a of
-              AkSubprocess _ -> False
+              AkSubprocess _ _ -> False
               _ -> True
           , not (any (\b -> fmap baHost (boundaryHost b) == Just (fnId x)) (scNodes sc))
           ]

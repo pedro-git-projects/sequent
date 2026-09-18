@@ -73,7 +73,7 @@ separateNodes sc g = g {geoShapes = foldl' fix (geoShapes g) pairs}
       Nothing -> False
     isContainerOf x y = case Map.lookup x byId of
       Just n -> case fnKind n of
-        NkActivity (Activity (AkSubprocess inner) _) -> any ((== y) . fnId) (scNodes inner)
+        NkActivity (Activity (AkSubprocess _ inner) _) -> any ((== y) . fnId) (scNodes inner)
         _ -> False
       Nothing -> False
 
@@ -96,7 +96,7 @@ growContainers sc g = g {geoShapes = foldl' grow (geoShapes g) subprocesses, geo
     subprocesses =
       [ (fnId n, map fnId (scNodes inner))
       | n <- scNodes sc
-      , NkActivity (Activity (AkSubprocess inner) _) <- [fnKind n]
+      , NkActivity (Activity (AkSubprocess _ inner) _) <- [fnKind n]
       ]
     grow shapes (owner, children) = case Map.lookup owner shapes of
       Nothing -> shapes
@@ -123,13 +123,29 @@ growContainers sc g = g {geoShapes = foldl' grow (geoShapes g) subprocesses, geo
       [] -> []
       ((_, r0) : _) -> go (rY r0) ls
       where
+        -- LANE-002 and HC-007: lanes tile their pool, so they share one width.
+        -- A lane that has to hold something wider than the columns allowed for
+        -- widens all of them rather than stepping out of the stack.
+        w = maximum (map (\(l, r) -> max (rW r) (requiredWidth l r)) ls)
         go _ [] = []
         go y ((l, r) : rest) =
           let h = requiredHeight l r
-           in (l, Rect (rX r) y (rW r) h) : go (y + h) rest
-    requiredHeight l r =
-      case [cr | n <- scNodes sc, fnLane n == Just l, Just cr <- [Map.lookup (fnId n) (geoShapes g)]] of
-        [] -> rH r
-        members ->
-          let content = unionRects members
-           in max (rH r) (rH content + 2 * containerPadY)
+           in (l, Rect (rX r) y w h) : go (y + h) rest
+
+    requiredWidth l r = case laneMembers l of
+      [] -> rW r
+      members -> max (rW r) (rectRight (unionRects members) + containerPadX - rX r)
+
+    laneMembers l =
+      [cr | n <- scNodes sc, fnLane n == Just l, Just cr <- [Map.lookup (fnId n) (geoShapes g)]]
+    -- Measured from the lane's own top to below its lowest member, not from
+    -- the content's height: a lane's top edge is fixed by the tiling, so a
+    -- member sitting well down the lane needs the whole reach covered. Taking
+    -- the content's height instead assumes it is centred, which is true of an
+    -- ordinary flow and false of anything stacked below it (LAYOUT-035).
+    --
+    -- Never shrinks: the max keeps a lane that already holds its content at
+    -- the height LANE-003 gave it.
+    requiredHeight l r = case laneMembers l of
+      [] -> rH r
+      members -> max (rH r) (rectBottom (unionRects members) + containerPadY - rY r)

@@ -235,11 +235,15 @@ columnsFor
   -> [Column]
 columnsFor metrics font sc layers sizes left0 = go 0 left0
   where
-    -- Boundary events hang on a host border and never claim column width.
+    -- Two kinds of node claim no column width. A boundary event hangs on a
+    -- host border; an event subprocess is on no path at all and LAYOUT-035
+    -- moves it below the flow afterwards, so letting it set a column's width
+    -- would leave a container-sized gap in a column it no longer occupies.
     members c =
       [ n
       | n <- scNodes sc
       , not (nodeIsBoundary n)
+      , not (isEventSubprocess n)
       , Map.findWithDefault 0 (fnId n) layers == c
       ]
     maxLayer = maximum (0 : Map.elems layers)

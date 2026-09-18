@@ -76,6 +76,8 @@ ruleRegistry =
   , rule "HC-014" Hard T0 "an expanded subprocess contains its children" "Layout.Collision.growContainers"
   , rule "LAYOUT-001" Strong T1 "forward flows make non-decreasing x progress" "Layout.Layering.asapLayers"
   , rule "LAYOUT-007" Strong T2 "the spine is straight and bend-free" "Layout.Regions.detectRegions + Layout.Bands"
+  , rule "LAYOUT-035" Medium T2 "an event subprocess is stacked below the flow" "Layout.relocateHandlers"
+  , rule "ART-005" Medium T2 "a group encloses its members and nothing else" "Layout.placeArtifacts"
   , rule "EDGE-007" Medium T2 "each connector class has a bend budget" "Layout.Routing.routeOne"
   , rule "EDGE-021" Strong T1 "a forward connector never moves backwards" "Layout.Routing.routeOne"
   , rule "AP-001" Hard T0 "no diagonal connector" "Layout.Routing.routeOne"

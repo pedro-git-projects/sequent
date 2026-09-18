@@ -38,6 +38,7 @@ data ValidationInput = ValidationInput
   , viRoutes    :: Map FlowId Route
   , viLabels    :: Map LabelKey LabelBox
   , viLanes     :: Map LaneId Rect
+  , viArtifacts :: Map ArtifactId Rect
   , viPorts     :: PortMap
   , viSpine     :: [NodeId]
   , viAxis      :: AxisMap
@@ -141,7 +142,7 @@ hardConstraints vi =
         hostOf x = baHost <$> (Map.lookup x byId >>= boundaryHost)
         containerOf n = case Map.lookup n byId of
           Just fn -> case fnKind fn of
-            NkActivity (Activity (AkSubprocess _) _) -> True
+            NkActivity (Activity (AkSubprocess _ _) _) -> True
             _ -> False
           Nothing -> False
 
@@ -297,7 +298,7 @@ hardConstraints vi =
     hc014 =
       [ v "HC-014" ("subprocess does not contain its children: " <> unNodeId (fnId n)) (RefNode (fnId n)) (Just "resize outward, bottom-up")
       | n <- scNodes sc
-      , NkActivity (Activity (AkSubprocess inner) _) <- [fnKind n]
+      , NkActivity (Activity (AkSubprocess _ inner) _) <- [fnKind n]
       , Just r <- [Map.lookup (fnId n) shapes]
       , child <- scNodes inner
       , Just cr <- [Map.lookup (fnId child) shapes]
@@ -307,7 +308,7 @@ hardConstraints vi =
 -- Positional semantics (T1) --------------------------------------------------
 
 positionalConstraints :: ValidationInput -> [Violation]
-positionalConstraints vi = layout001 ++ edge021 ++ layout007 ++ edge007 ++ label011
+positionalConstraints vi = layout001 ++ edge021 ++ layout007 ++ edge007 ++ label011 ++ layout035 ++ art005
   where
     sc = viScope vi
     shapes = viShapes vi
@@ -333,6 +334,52 @@ positionalConstraints vi = layout001 ++ edge021 ++ layout007 ++ edge007 ++ label
       ]
       where
         isBoundarySrc fl = maybe False nodeIsBoundary (Map.lookup (sfSource fl) byId)
+
+    -- LAYOUT-035 — an event subprocess sits below the flow, never inside it.
+    -- Nothing connects one, so the layering pass treats it as a disconnected
+    -- component and would otherwise leave it wherever the ordering reached it.
+    --
+    -- "The flow" is the handler's own lane's flow. A handler in the first of
+    -- two lanes is above the second lane's content and has to be: it belongs
+    -- to the first lane, and HC-003 keeps it there.
+    layout035 =
+      [ v2 "LAYOUT-035" ("event subprocess overlaps the flow: " <> unNodeId (fnId n)) (RefNode (fnId n)) (Just "stack it below its lane's content")
+      | n <- scNodes sc
+      , isEventSubprocess n
+      , Just r <- [Map.lookup (fnId n) shapes]
+      , Just box <- [flowBox (fnLane n)]
+      , rY r < rectBottom box
+      ]
+      where
+        handlers = Set.fromList [fnId n | n <- scNodes sc, isEventSubprocess n]
+        contained = Set.fromList [fnId c | n <- scNodes sc, isEventSubprocess n, Just inner <- [subprocessScope n], c <- scNodes inner]
+        flowBox l = case rects of
+          [] -> Nothing
+          rs -> Just (unionRects rs)
+          where
+            rects =
+              [ r
+              | n <- scNodes sc
+              , fnLane n == l
+              , not (Set.member (fnId n) handlers)
+              , not (Set.member (fnId n) contained)
+              , Just r <- [Map.lookup (fnId n) shapes]
+              ]
+
+    -- ART-005 — a group encloses its members and nothing else. Advisory: a
+    -- group is an annotation, and moving a node to satisfy one would distort
+    -- the diagram for no semantic gain.
+    art005 =
+      [ v2 "ART-005" ("group encloses a step that is not a member: " <> unArtifactId aid) (RefArtifact aid) (Just "advisory only; the members are not contiguous")
+      | a <- scArtifacts sc
+      , artKind a == AkGroup
+      , let aid = artId a
+      , Just box <- [Map.lookup aid (viArtifacts vi)]
+      , let members = Set.fromList (artMembers a)
+      , (i, r) <- Map.toAscList shapes
+      , not (Set.member i members)
+      , rectContains box r
+      ]
 
     -- EDGE-021 — a forward edge's route never moves backwards.
     edge021 =
