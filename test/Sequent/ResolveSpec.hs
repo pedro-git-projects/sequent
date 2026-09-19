@@ -216,6 +216,43 @@ spec = do
       map (fmap unLaneId . Just . laneId) (lanesOf "lane z \"Z\" { start s }\nlane a \"A\" { end e }")
         `shouldBe` [Just "Lane_z", Just "Lane_a"]
 
+  describe "pools and the processes in them" $ do
+    let procsOf src = sgProcesses (graphOf src)
+        partsOf src = maybe [] colParticipants (sgCollaboration (graphOf src))
+        body = "{ start s\ntask a\nend e }"
+
+    it "lends the pool's label to the process it holds" $
+      -- The pool and its process are one declaration, so one label names both.
+      -- Every file written before the process clause existed relies on it.
+      map procName (procsOf ("collaboration c { pool x \"X\" " <> body <> " }"))
+        `shouldBe` [Just "X"]
+
+    it "names the process separately when the pool says so" $
+      let src = "collaboration c { pool x \"X\" process \"Deal\" " <> body <> " }"
+       in (map partName (partsOf src), map procName (procsOf src))
+            `shouldBe` ([Just "X"], [Just "Deal"])
+
+    it "reads an empty process clause as a process with no name" $
+      -- What a modeller leaves behind by naming the pool and never opening the
+      -- process properties. BPMN writes no name attribute at all.
+      let src = "collaboration c { pool x \"X\" process \"\" " <> body <> " }"
+       in (map partName (partsOf src), map procName (procsOf src))
+            `shouldBe` ([Just "X"], [Nothing])
+
+    it "carries the nonexecutable modifier into isExecutable" $ do
+      map procExecutable (procsOf ("collaboration c { pool x \"X\" nonexecutable " <> body <> " }"))
+        `shouldBe` [False]
+      map procExecutable (procsOf "process p \"P\" nonexecutable { start s\ntask a\nend e }")
+        `shouldBe` [False]
+
+    it "says so when a black-box pool describes a process it does not have" $
+      messagesOf (diagsOf "collaboration c { pool x \"X\" { start s\ntask a\nend e } pool y \"Y\" process \"Ghost\" nonexecutable\na ~> y }")
+        `shouldSatisfy` \ms ->
+          any (isInfixOf "'process' names nothing") ms && any (isInfixOf "'nonexecutable' describes nothing") ms
+
+    it "leaves a process executable by default" $
+      map procExecutable (procsOf "process p \"P\" { start s\ntask a\nend e }") `shouldBe` [True]
+
   describe "Camunda metadata" $ do
     it "keeps the job type, retries, mappings and headers" $
       execOf "start s\nservice t { type \"job\" retries 4 input a = \"=x\" output b = \"=y\" header k = \"v\" }\nend e"

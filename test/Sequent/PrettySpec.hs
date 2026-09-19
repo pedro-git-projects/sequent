@@ -47,6 +47,19 @@ spec = do
       let src = "process p { start s\ntask a\nstop\nhandler h { start c { message m\nnoninterrupting }\nend f }\ngroup g \"G\" { a } }"
        in fmt (fmt src) `shouldBe` fmt src
 
+  describe "pools" $ do
+    it "writes the process clause and the nonexecutable modifier" $
+      fmt "collaboration c{pool a \"Pool\" process \"Deal\" nonexecutable{start s}}"
+        `shouldBe` "collaboration c {\n  pool a \"Pool\" process \"Deal\" nonexecutable {\n    start s\n  }\n}\n"
+
+    it "writes neither when the pool lends its name to an executable process" $
+      fmt "collaboration c{pool a \"Pool\"{start s}}"
+        `shouldBe` "collaboration c {\n  pool a \"Pool\" {\n    start s\n  }\n}\n"
+
+    it "is a fixed point on a pool that names its process" $
+      let src = "collaboration c { pool a \"Pool\" process \"\" { start s } }"
+       in fmt (fmt src) `shouldBe` fmt src
+
   describe "round-tripping" $ do
     it "reparses to the same tree modulo spans" $
       let src = "process p { start s\ntask a \"A\"\nend e }"

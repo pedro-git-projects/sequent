@@ -24,6 +24,28 @@ spec = do
       [(unLoc n, code, lbl) | DError n code lbl _ <- decls "error e \"CODE\" \"Human\"\nprocess p { start a }"]
         `shouldBe` [("e", "CODE", Just "Human")]
 
+    it "parses a pool whose process has a name of its own" $
+      -- A participant and the process behind it are two BPMN elements with two
+      -- names, and a modeller sets them independently.
+      [ (unLoc (poName q), poLabel q, poProcess q, poExecutable q)
+      | DCollaboration c <- decls "collaboration c { pool a \"Pool\" process \"Deal\" nonexecutable { start s } }"
+      , CPool q <- scItems c
+      ]
+        `shouldBe` [("a", Just "Pool", Just "Deal", False)]
+
+    it "parses the nonexecutable modifier on a process" $
+      [(unLoc (spName p), spExecutable p) | DProcess p <- decls "process p \"L\" nonexecutable { start a }"]
+        `shouldBe` [("p", False)]
+
+    it "defaults a process to executable" $
+      [spExecutable p | DProcess p <- decls "process p { start a }"] `shouldBe` [True]
+
+    it "skips a byte order mark in front of the first declaration" $
+      -- U+FEFF is what a Windows editor or a PowerShell redirection leaves at
+      -- the top of the file. It is invisible wherever it came from, so a parse
+      -- error pointing at it points at nothing the author can see.
+      [unLoc (spName p) | DProcess p <- decls "\65279process p { start a }"] `shouldBe` ["p"]
+
     it "parses a collaboration with a black-box pool" $
       [ (unLoc (poName q), poBody q == Nothing)
       | DCollaboration c <- decls "collaboration c { pool a { start s } pool b \"Other\" }"
@@ -62,7 +84,7 @@ spec = do
             Left (d : _) -> T.unpack (diagMessage d) `shouldSatisfy` isInfixOf "reserved word"
             _ -> expectationFailure ("expected a parse error for " <> T.unpack w)
         )
-        ["handler", "group", "stop"]
+        ["handler", "group", "stop", "nonexecutable"]
 
   describe "steps" $ do
     it "reads a step keyword and a name" $

@@ -215,6 +215,40 @@ spec = do
         "lane one \"One\" { start s\nxor g { branch \"a\" otherwise { task p } branch \"b\" when \"=b\" { task q } } }\nlane two \"Two\" { end e }"
         `shouldSatisfy` \s -> T.isInfixOf "lane one" s && T.isInfixOf "lane two" s
 
+  describe "a pool and the process behind it" $ do
+    -- Three shapes a modeller leaves behind that the language could not write
+    -- until the pool learned to name its process: a process named differently
+    -- from its participant, a process nobody named, and a pool that is not
+    -- executed. Each used to come back as the pool's own label, executable,
+    -- and the import rejected its own output for it.
+    let collab =
+          "collaboration c { pool a \"A\" { start s\ntask t\nend e } "
+            <> "pool b \"B\" { start u\ntask v\nend f } t ~> v }"
+        rewritten from to = T.replace from to (compileXml collab)
+
+    it "keeps a process name the participant does not share" $ do
+      let x = rewritten "id=\"Process_a\" name=\"A\"" "id=\"Process_a\" name=\"[CCS] Deal\""
+          r = importText "t.bpmn" x
+      messagesOfD [d | d <- irDiagnostics r, diagSeverity d == Error] `shouldBe` []
+      irSource r `shouldSatisfy` maybe False (T.isInfixOf "pool a \"A\" process \"[CCS] Deal\"")
+
+    it "keeps a process nobody named unnamed" $ do
+      let x = rewritten "id=\"Process_a\" name=\"A\"" "id=\"Process_a\""
+          r = importText "t.bpmn" x
+      messagesOfD [d | d <- irDiagnostics r, diagSeverity d == Error] `shouldBe` []
+      irSource r `shouldSatisfy` maybe False (T.isInfixOf "pool a \"A\" process \"\"")
+
+    it "keeps a non-executable process non-executable" $ do
+      let x = rewritten "id=\"Process_b\" name=\"B\" isExecutable=\"true\"" "id=\"Process_b\" name=\"B\" isExecutable=\"false\""
+          r = importText "t.bpmn" x
+      messagesOfD [d | d <- irDiagnostics r, diagSeverity d == Error] `shouldBe` []
+      irSource r `shouldSatisfy` maybe False (T.isInfixOf "pool b \"B\" nonexecutable")
+
+    it "reads a file that starts with a byte order mark" $
+      -- A .bpmn written as "UTF-8 with signature" is a valid document with an
+      -- encoding artefact in front of it, not a document with no root element.
+      messagesOfD (rdDiagnostics (readBpmn "t.bpmn" ("\65279" <> compileXml collab))) `shouldBe` []
+
   describe "the round trip" $ do
     examples <- runIO (sort . filter ((== ".sq") . takeExtension) <$> listDirectory "examples")
     forM_ examples $ \name -> describe name $ do
