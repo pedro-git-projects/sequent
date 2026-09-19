@@ -265,6 +265,22 @@ warning[semantic]: 'Activity_b' has no outgoing flow and is not an end event
 /tmp/warn.sq -> /tmp/warn.bpmn
 ```
 
+## Encoding
+
+Every file `sequent` reads or writes is UTF-8, whatever the machine's locale
+says. Reading also accepts the encodings a Windows toolchain produces without
+being asked: a byte order mark in front of the first character is skipped rather
+than parsed, and a UTF-16 file — what `>` writes in Windows PowerShell 5 — is
+decoded as one. A redirected stdout is UTF-8 too, so
+
+```
+sequent import x.bpmn > x.sq
+```
+
+and `sequent import x.bpmn -o x.sq` write the same bytes. A console keeps
+whatever encoding the runtime chose for it, which is the one that can render to
+the screen.
+
 ## The pipeline
 
 ```

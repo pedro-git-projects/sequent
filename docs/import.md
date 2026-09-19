@@ -118,6 +118,9 @@ check does not inspect rather than implying the graphs match.
 | Multi-instance loops | always |
 | Lanes | always, including a step that sits inside a branch |
 | Pools and message flows | always |
+| A process named differently from its participant | always, as `pool p "Participant" process "Process"` |
+| A process with no name of its own | always, as `process ""` |
+| `isExecutable="false"` | always, as `nonexecutable` |
 | Text annotations and their associations | always |
 | Boundary events, interrupting and not | always |
 | Event subprocesses, interrupting and not | always, as `handler` |
@@ -295,7 +298,17 @@ tag, group membership recovered from geometry, non-interrupting flags in both
 directions, dangling paths closed with `stop`, and each remaining unsupported
 construct by name.
 
-**No `.bpmn` written by Camunda Modeler or another tool has been imported yet.**
-The reader is built for them — that is the whole reason it resolves prefixes to
-URIs instead of matching spellings — but the evidence so far is hand-built
-documents and this compiler's own output.
+**Files from a real modeller have only started to arrive.** The suite is still
+hand-built documents and this compiler's own output; the reader is built for
+other people's files — that is the whole reason it resolves prefixes to URIs
+instead of matching spellings — but it has not been run over a corpus of them.
+
+The first one that was tried found three things this compiler had never
+produced and so had never read back, all of them in the same declaration: a
+process named differently from its participant, a process nobody named at all,
+and a pool with `isExecutable="false"`. The language could write none of the
+three, so the pool lent its label to the process and the import rejected its own
+output — correctly, which is the point of the self-check. `process "…"` and
+`nonexecutable` exist because of that file. Expect the next corpus to find more
+of the same shape: attributes a modeller sets that this compiler had no reason
+to write.

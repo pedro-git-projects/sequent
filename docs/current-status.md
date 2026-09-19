@@ -92,10 +92,16 @@ Files this compiler did not write have been exercised only on hand-built inputs
 in `Sequent.ImportSpec` — namespace spellings, entity decoding, DOCTYPE
 skipping, ids that are not names, Zeebe metadata read from the extension rather
 than the tag, group membership recovered from geometry, and each remaining
-unsupported construct. **No `.bpmn` produced by Camunda
-Modeler or any other tool has been imported**, for the same reason nothing has
-been opened in Modeler: it needs a person with the tool. See
-[`import.md`](import.md).
+unsupported construct. **No corpus of `.bpmn` files produced by Camunda Modeler
+or another tool has been imported**, for the same reason nothing has been opened
+in Modeler: it needs a person with the tool.
+
+The first modeller file that was tried found three attributes of one
+declaration that this compiler never writes and so had never read back — a
+process named differently from its participant, a process with no name, and
+`isExecutable="false"` — and the import rejected its own output for each, which
+is the self-check working. The language grew `process "…"` and `nonexecutable`
+in response. See [`import.md`](import.md).
 
 ## Determinism
 

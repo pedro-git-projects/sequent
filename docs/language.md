@@ -253,6 +253,23 @@ pools; one that does not is a semantic error.
 A `pool` with no body is a black-box participant, and a message flow may target
 it by name.
 
+A pool is two BPMN elements — the `bpmn:participant` the label names, and the
+`bpmn:process` the body is — and BPMN gives each its own name. They usually
+agree, so the pool's label names both. When they do not, say so:
+
+```
+pool buyer "Buyer" process "[CCS][Insertion] Deal Process" { … }
+pool seller "Seller" process "" nonexecutable { … }
+```
+
+`process "…"` names the process alone, and `process ""` says the process has no
+name — which is what a modeller leaves behind by naming the pool and never
+opening the process properties. `nonexecutable` is `isExecutable="false"`, the
+usual state of the pool a collaboration models but does not run; it is written
+on a standalone `process` declaration the same way. Both clauses exist so that
+`sequent import` can bring a file back without renaming anything, and both are
+written back only when they differ from the default.
+
 The whole worked-up process is `examples/order.sq`; the collaboration is
 `examples/collaboration.sq`.
 
@@ -374,7 +391,7 @@ A file is a sequence of top-level declarations. At least one `process` or
 
 | Construct | Syntax | Becomes |
 |---|---|---|
-| process | `process name "Label"? { item* }` | `bpmn:process` (`isExecutable="true"`) |
+| process | `process name "Label"? nonexecutable? { item* }` | `bpmn:process` (`isExecutable="true"` unless `nonexecutable`) |
 | collaboration | `collaboration name "Label"? { citem* }` | `bpmn:collaboration` |
 | message | `message name "wire-name" correlation "=expr"?` | `bpmn:message`, with `zeebe:subscription` when a correlation key is given |
 | signal | `signal name "wire-name"` | `bpmn:signal` |
@@ -723,6 +740,8 @@ serialised, **Tested** means a test in `test/` covers it.
 | Lanes | ✅ | ✅ | ✅ | ✅ |
 | Nested lanes | ❌ | ⚠ `laneChildren` exists, always empty | ❌ | ❌ |
 | Pools / participants | ✅ | ✅ | ✅ | ✅ |
+| A process named apart from its pool (`process "…"`) | ✅ | ✅ | ✅ | ✅ parser, formatter, resolver, import |
+| Non-executable process (`nonexecutable`) | ✅ | ✅ | ✅ | ✅ parser, formatter, resolver, import |
 | Black-box pool | ✅ | ✅ | ✅ | ❌ untested |
 | Message flows (`~>`) | ✅ | ✅ | ✅ | ✅ |
 | Text annotations (`note`) | ✅ | ✅ | ✅ | ✅ parser, layout, `examples/order.sq` golden |
@@ -931,14 +950,14 @@ with its gap named, in [`spec-compliance.md`](spec-compliance.md).
 
 ```
 file        := decl*
-decl        := 'process' name label? '{' item* '}'
+decl        := 'process' name label? 'nonexecutable'? '{' item* '}'
              | 'collaboration' name label? '{' citem* '}'
              | 'message' name string ('correlation' string)?
              | 'signal' name string
              | 'error' name string label?
              | 'escalation' name string label?
 
-citem       := 'pool' name label? ('{' item* '}')?
+citem       := 'pool' name label? ('process' string)? 'nonexecutable'? ('{' item* '}')?
              | name '~>' name label?
 
 item        := 'doc' string
@@ -990,7 +1009,7 @@ The grammar is whitespace-insensitive with `{}` blocks: no indentation rules, so
 a merge that shifts indentation cannot change meaning.
 
 Every keyword above is reserved and cannot name a step, plus `correlation`,
-`join`, `priority`, `in`, `at`, `sequential`, `from`, `to`, `on`, `catch`, `as`
-and `branch`. That costs a handful of unusable names and buys unambiguous
-parsing and errors that land on the offending word. The full set is
+`join`, `priority`, `in`, `at`, `sequential`, `from`, `to`, `on`, `catch`, `as`,
+`nonexecutable` and `branch`. That costs a handful of unusable names and buys
+unambiguous parsing and errors that land on the offending word. The full set is
 `Sequent.Language.Parser.reservedWords`.

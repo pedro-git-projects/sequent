@@ -205,7 +205,7 @@ buys, stage by stage, with the type and module that carries it.
 
 ## What is in scope
 
-Start, end, intermediate and boundary events with message, timer, signal, error, escalation, link, compensation and terminate definitions; non-interrupting start events; abstract, service, user, manual, script, business-rule, send and receive tasks; call activities; expanded subprocesses; event subprocesses; exclusive, parallel, inclusive, event-based and complex gateways; sequence flows with FEEL conditions and defaults; paths that stop without an end event; lanes; pools and message flows; text annotations, data objects and groups; multi-instance loops.
+Start, end, intermediate and boundary events with message, timer, signal, error, escalation, link, compensation and terminate definitions; non-interrupting start events; abstract, service, user, manual, script, business-rule, send and receive tasks; call activities; expanded subprocesses; event subprocesses; exclusive, parallel, inclusive, event-based and complex gateways; sequence flows with FEEL conditions and defaults; paths that stop without an end event; lanes; pools and message flows, including a process named apart from its participant and a pool that is not executable; text annotations, data objects and groups; multi-instance loops.
 
 Camunda: `zeebe:taskDefinition`, `zeebe:ioMapping`, `zeebe:taskHeaders`,
 `zeebe:userTask`, `zeebe:formDefinition`, `zeebe:assignmentDefinition`,
