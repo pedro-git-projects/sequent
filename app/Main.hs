@@ -2,14 +2,25 @@
 module Main (main) where
 
 import Control.Monad (unless, when)
+import qualified Data.ByteString as BS
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
+import qualified Data.Text.Encoding.Error as TE
 import qualified Data.Text.IO as TIO
 import Options.Applicative
 import System.Exit (exitFailure)
 import System.FilePath (replaceExtension)
-import System.IO (hPutStr, stderr)
+import System.IO
+  ( Handle
+  , hIsTerminalDevice
+  , hPutStr
+  , hSetEncoding
+  , stderr
+  , stdout
+  , utf8
+  )
 
 import Sequent.Compiler
 import Sequent.Diagnostic
@@ -27,7 +38,9 @@ data Command
   | Rules
 
 main :: IO ()
-main = run =<< execParser cli
+main = do
+  mapM_ utf8Output [stdout, stderr]
+  run =<< execParser cli
 
 cli :: ParserInfo Command
 cli =
@@ -85,7 +98,7 @@ run :: Command -> IO ()
 run cmd = case cmd of
   Rules -> mapM_ (TIO.putStrLn . describeRule) ruleRegistry
   Build src out noDi lenient -> do
-    text <- TIO.readFile src
+    text <- readSource src
     let opts = defaultOptions {coEmitDi = not noDi, coStrictLayout = not lenient}
         res = compileText opts src text
     report src text (crDiagnostics res)
@@ -93,20 +106,20 @@ run cmd = case cmd of
       Nothing -> exitFailure
       Just xml -> do
         let dest = fromMaybe (replaceExtension src ".bpmn") out
-        TIO.writeFile dest xml
+        writeGenerated dest xml
         putStrLn (src <> " -> " <> dest)
   Check src -> do
-    text <- TIO.readFile src
+    text <- readSource src
     let ds = checkText src text
     report src text ds
     if hasErrors ds then exitFailure else putStrLn (src <> ": ok")
   Fmt src write -> do
-    text <- TIO.readFile src
+    text <- readSource src
     case formatText src text of
       Left ds -> report src text ds >> exitFailure
-      Right out -> if write then TIO.writeFile src out else TIO.putStr out
+      Right out -> if write then writeGenerated src out else TIO.putStr out
   Import src out -> do
-    text <- TIO.readFile src
+    text <- readSource src
     let res = importText src text
     report src text (irDiagnostics res)
     case irSource res of
@@ -115,11 +128,11 @@ run cmd = case cmd of
         case out of
           Nothing -> TIO.putStr sq
           Just dest -> do
-            TIO.writeFile dest sq
+            writeGenerated dest sq
             putStrLn (src <> " -> " <> dest)
         when (hasErrors (irDiagnostics res)) exitFailure
   Report src -> do
-    text <- TIO.readFile src
+    text <- readSource src
     let res = compileText (defaultOptions {coStrictLayout = False}) src text
     report src text (crDiagnostics res)
     case crLayout res of
@@ -150,6 +163,50 @@ describeRule r =
     , T.justifyLeft 56 ' ' (ruleSummary r)
     , ruleImpl r
     ]
+
+-- Files ------------------------------------------------------------------------
+--
+-- Every file this program reads and writes is UTF-8, whatever the machine's
+-- locale says. Trusting the locale is how a build on a Windows console produces
+-- a @.bpmn@ whose declaration says @encoding="UTF-8"@ and whose bytes are
+-- code page 1252 — or fails outright on the first accented label. The encoding
+-- is a property of the format, so it is named here rather than inherited.
+
+-- | Read a source file as text.
+--
+-- The byte order mark a Windows editor or a PowerShell redirection leaves in
+-- front of the first character is not part of the program, so it is dropped
+-- here; a UTF-16 file — what @>@ writes in Windows PowerShell 5 — is decoded
+-- rather than reported as a file full of unexpected characters. Anything else
+-- is UTF-8, decoded leniently so that one bad byte is one replacement
+-- character in a diagnostic rather than an exception with no file name in it.
+readSource :: FilePath -> IO Text
+readSource path = decode <$> BS.readFile path
+  where
+    decode bs
+      | Just rest <- BS.stripPrefix bomUtf8 bs = lenient rest
+      | Just rest <- BS.stripPrefix bomUtf16le bs = TE.decodeUtf16LEWith TE.lenientDecode rest
+      | Just rest <- BS.stripPrefix bomUtf16be bs = TE.decodeUtf16BEWith TE.lenientDecode rest
+      | otherwise = lenient bs
+    lenient = TE.decodeUtf8With TE.lenientDecode
+    bomUtf8 = BS.pack [0xEF, 0xBB, 0xBF]
+    bomUtf16le = BS.pack [0xFF, 0xFE]
+    bomUtf16be = BS.pack [0xFE, 0xFF]
+
+-- | Write a generated file as UTF-8, with no byte order mark.
+writeGenerated :: FilePath -> Text -> IO ()
+writeGenerated path = BS.writeFile path . TE.encodeUtf8
+
+-- | Make a redirected stream UTF-8.
+--
+-- Only when it is redirected: a console keeps whatever encoding the runtime
+-- chose for it, which on Windows is the one that can actually render to the
+-- screen. A file or a pipe gets UTF-8, so that @sequent import x.bpmn > x.sq@
+-- writes the same bytes as @--output@ would.
+utf8Output :: Handle -> IO ()
+utf8Output h = do
+  tty <- hIsTerminalDevice h
+  unless tty (hSetEncoding h utf8)
 
 report :: FilePath -> Text -> [Diagnostic] -> IO ()
 report src text ds =

@@ -122,6 +122,10 @@ parseXmlDocument path src = case runParser document path src of
 
 document :: P XNode
 document = do
+  -- A leading byte order mark is an encoding artefact rather than markup, and
+  -- plenty of tools write one. Nothing downstream can see it, so it is skipped
+  -- here rather than reported as a document that does not start with an element.
+  _ <- optional (single '\65279')
   misc
   e <- element Map.empty
   misc
