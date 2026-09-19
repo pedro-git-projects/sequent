@@ -86,7 +86,8 @@ public final class SequentTokenTypes {
         // Everything else the grammar gives meaning to: control and wiring.
         put(m, KEYWORD,
                 "on", "catch", "noninterrupting", "as", "from", "to", "pin",
-                "at", "flow", "goto", "stop", "join", "branch", "when", "otherwise");
+                "at", "flow", "goto", "stop", "join", "branch", "when", "otherwise",
+                "nonexecutable");
 
         return Collections.unmodifiableMap(m);
     }

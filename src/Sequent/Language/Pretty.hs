@@ -139,7 +139,9 @@ formatDecl d = case d of
   DError n code lbl _ -> ["error " <> unLoc n <> " " <> str code <> labelOf lbl]
   DEscalation n code lbl _ -> ["escalation " <> unLoc n <> " " <> str code <> labelOf lbl]
   DProcess p ->
-    block ("process " <> unLoc (spName p) <> labelOf (spLabel p)) (items (spBody p))
+    block
+      ("process " <> unLoc (spName p) <> labelOf (spLabel p) <> executableOf (spExecutable p))
+      (items (spBody p))
   DCollaboration c ->
     block ("collaboration " <> unLoc (scName c) <> labelOf (scLabel c)) (collabItems (scItems c))
 
@@ -152,7 +154,17 @@ collabItems = groups False . map one
       Just b -> block (header p) (items b)
     one (CMessageFlow m) =
       PLines [unLoc (mfFrom m) <> " ~> " <> unLoc (mfTo m) <> labelOf (mfLabelS m)]
-    header p = "pool " <> unLoc (poName p) <> labelOf (poLabel p)
+    header p =
+      "pool "
+        <> unLoc (poName p)
+        <> labelOf (poLabel p)
+        <> maybe "" (\t -> " process " <> str t) (poProcess p)
+        <> executableOf (poExecutable p)
+
+-- | The @nonexecutable@ modifier is written only when it applies; executable is
+-- the default and saying so on every process would be noise.
+executableOf :: Bool -> Text
+executableOf exec = if exec then "" else " nonexecutable"
 
 -- | Render the items of a body, each as its own group of lines. Grouping is
 -- what the blank-line rule operates on.

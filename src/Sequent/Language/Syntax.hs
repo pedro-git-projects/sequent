@@ -132,10 +132,14 @@ declSpan d = case d of
   DComment c -> cmSpan c
 
 data SProcess = SProcess
-  { spName  :: Name
-  , spLabel :: Maybe Text
-  , spBody  :: [SItem]
-  , spSpan  :: Span
+  { spName       :: Name
+  , spLabel      :: Maybe Text
+  , spExecutable :: Bool
+  -- ^ False when the declaration carries the @nonexecutable@ modifier. A
+  -- process a Camunda 8 cluster is meant to run is executable, which is why
+  -- that is the default; the other pool in a collaboration usually is not.
+  , spBody       :: [SItem]
+  , spSpan       :: Span
   }
   deriving (Eq, Show)
 
@@ -155,11 +159,22 @@ data SCItem
   deriving (Eq, Show)
 
 -- | A pool. A pool with no body is a black box (LANE-014).
+--
+-- A pool is two BPMN elements: the participant, which the label names, and the
+-- process it points at, which the body is. The two carry separate names in
+-- BPMN, and a modeller sets them independently — the participant is what the
+-- diagram shows, the process name is what an operations tool shows. They agree
+-- often enough that 'poProcess' is optional, and writing it is how a pool says
+-- they differ. An empty string says the process has no name at all.
 data SPool = SPool
-  { poName  :: Name
-  , poLabel :: Maybe Text
-  , poBody  :: Maybe [SItem]
-  , poSpan  :: Span
+  { poName       :: Name
+  , poLabel      :: Maybe Text
+  , poProcess    :: Maybe Text
+  -- ^ The name of the process inside the pool, when it is not the pool's own
+  -- label.
+  , poExecutable :: Bool
+  , poBody       :: Maybe [SItem]
+  , poSpan       :: Span
   }
   deriving (Eq, Show)
 

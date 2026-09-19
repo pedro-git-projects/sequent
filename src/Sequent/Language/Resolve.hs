@@ -246,11 +246,14 @@ buildCollaboration roots c standalone = do
     pure (p, ParticipantId pid, k :: Int)
 
   built <- forM parts $ \(p, pid, k) -> case poBody p of
-    Nothing -> pure (Participant pid (poLabel p) Nothing k, Nothing, Map.empty)
+    Nothing -> do
+      blackBoxClauses p
+      pure (Participant pid (named (poLabel p)) Nothing k, Nothing, Map.empty)
     Just body -> do
-      proc <- buildProcess roots (Just (poName p)) (SProcess (poName p) (poLabel p) body (poSpan p))
+      let inner = SProcess (poName p) (processLabel p) (poExecutable p) body (poSpan p)
+      proc <- buildProcess roots (Just (poName p)) inner
       let syms = Map.fromList [(nm, s) | (nm, s) <- Map.toList (procSymbols proc)]
-      pure (Participant pid (poLabel p) (Just (procId (bpProcess proc))) k, Just (bpProcess proc), syms)
+      pure (Participant pid (named (poLabel p)) (Just (procId (bpProcess proc))) k, Just (bpProcess proc), syms)
 
   standaloneProcs <- mapM (buildProcess roots Nothing) standalone
 
@@ -268,6 +271,42 @@ buildCollaboration roots c standalone = do
 
   mflows <- buildMessageFlows (Map.union poolSyms allSyms) poolOwner [m | CMessageFlow m <- scItems c]
   pure (assemble roots (Just (Collaboration colId participants mflows)) procs)
+
+-- | A pool with no body is a black box: LANE-014, a participant with no
+-- @processRef@. There is no process behind it, so a clause describing one
+-- describes nothing — said out loud rather than dropped, because the author
+-- wrote it expecting it to reach the file.
+blackBoxClauses :: SPool -> R ()
+blackBoxClauses p = mapM_ report messages
+  where
+    report m =
+      emit
+        ( withHint
+            "a pool with no body is a black box; give it a body, or drop the clause"
+            (warnAt SemanticError (poSpan p) m)
+        )
+    messages =
+      ["'" <> nm <> "' has no body, so 'process' names nothing" | isJust (poProcess p)]
+        ++ ["'" <> nm <> "' has no body, so 'nonexecutable' describes nothing" | not (poExecutable p)]
+    nm = unLoc (poName p)
+
+-- | What the process inside a pool is called.
+--
+-- A pool that says nothing about it lends the process its own label, which is
+-- what a pool written by hand means and what every file written before the
+-- @process@ clause existed relied on. A pool that does say gets exactly what it
+-- said, and @process ""@ says the process has no name — the state a modeller
+-- leaves behind by naming the pool and never opening the process properties.
+processLabel :: SPool -> Maybe Text
+processLabel p = case poProcess p of
+  Just t -> named (Just t)
+  Nothing -> named (poLabel p)
+
+-- | A label that is blank is no label. BPMN does not distinguish @name=""@ from
+-- an absent @name@, so neither does this.
+named :: Maybe Text -> Maybe Text
+named (Just t) | T.null (T.strip t) = Nothing
+named other = other
 
 buildMessageFlows :: Symbols -> Map Text ParticipantId -> [SMsgFlow] -> R [MessageFlow]
 buildMessageFlows syms owner ms0 = do
@@ -340,9 +379,9 @@ buildProcess roots _pool p = do
   let proc =
         BpmnProcess
           { procId = ProcessId pid
-          , procName = spLabel p
+          , procName = named (spLabel p)
           , procDoc = firstDoc (spBody p)
-          , procExecutable = True
+          , procExecutable = spExecutable p
           , procLanes = lanes
           , procScope = scope
           }

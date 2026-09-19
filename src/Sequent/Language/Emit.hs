@@ -241,7 +241,13 @@ collaborationDecl syms g col = ([DCollaboration (SCollab (loc cname) Nothing ite
 
 poolOf :: Symbols -> Participant -> Maybe BpmnProcess -> (SPool, [Diagnostic])
 poolOf syms p mproc =
-  ( SPool (loc (nameOfId syms (unParticipantId (partId p)))) (partName p) body noSpan
+  ( SPool
+      (loc (nameOfId syms (unParticipantId (partId p))))
+      (partName p)
+      procLabel
+      (maybe True procExecutable mproc)
+      body
+      noSpan
   , ds
   )
   where
@@ -250,6 +256,14 @@ poolOf syms p mproc =
       -- pool with no body.
       Nothing -> (Nothing, [])
       Just pr -> let (is, d) = processBody syms pr in (Just is, d)
+
+    -- The pool lends its label to the process it holds, so the clause is
+    -- written only when the two names differ — including the common case of a
+    -- named pool around a process the modeller never named, which is
+    -- @process ""@.
+    procLabel = case mproc of
+      Just pr | procName pr /= partName p -> Just (fromMaybe "" (procName pr))
+      _ -> Nothing
 
 msgFlowOf :: Symbols -> MessageFlow -> SMsgFlow
 msgFlowOf syms m =
@@ -264,7 +278,15 @@ refName syms r = case r of
   RefLane i -> nameOfId syms (unLaneId i)
 
 processDecl :: Symbols -> BpmnProcess -> (SProcess, [Diagnostic])
-processDecl syms p = (SProcess (loc (nameOfId syms (unProcessId (procId p)))) (procName p) items noSpan, ds)
+processDecl syms p =
+  ( SProcess
+      (loc (nameOfId syms (unProcessId (procId p))))
+      (procName p)
+      (procExecutable p)
+      items
+      noSpan
+  , ds
+  )
   where
     (items, ds) = processBody syms p
 

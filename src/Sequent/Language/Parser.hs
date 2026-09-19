@@ -55,7 +55,19 @@ parseFile path src =
   where
     -- The leading space consumer starts on a fresh line, so a comment at the
     -- very top of the file is a heading rather than a trailing note.
-    file = scFrom True *> (SFile <$> withComments DComment decl) <* eof
+    file = byteOrderMark *> scFrom True *> (SFile <$> withComments DComment decl) <* eof
+
+-- | Skip a byte order mark at the very start of the file.
+--
+-- A BOM is an encoding artefact, not a character of the program: a file that
+-- went through a Windows editor, a PowerShell redirection, or any tool that
+-- writes "UTF-8 with signature" arrives with U+FEFF in front of the first
+-- declaration. It is invisible in every editor that produced it, so a parse
+-- error pointing at it reads as a parse error pointing at nothing. It is
+-- consumed rather than stripped from the input so that every span after it
+-- still counts the characters the file actually contains.
+byteOrderMark :: P ()
+byteOrderMark = void (optional (single '\65279'))
 
 bundleDiagnostics :: ParseErrorBundle Text Void -> [Diagnostic]
 bundleDiagnostics b = map toDiag (NE.toList attached)
@@ -185,7 +197,7 @@ reservedWords =
     , "correlation", "doc", "lane", "on", "catch", "noninterrupting", "as"
     , "note", "data", "from", "to", "pin", "at", "flow", "goto", "join"
     , "branch", "priority", "when", "otherwise", "subprocess", "escalation"
-    , "handler", "group", "stop"
+    , "handler", "group", "stop", "nonexecutable"
     , "type", "retries", "input", "output", "header", "form", "assignee"
     , "groups", "users", "due", "expression", "result", "decision", "calls"
     , "propagate", "each", "in", "collect", "timer", "link", "terminate"
@@ -259,13 +271,18 @@ decl =
 
 processDecl :: P SProcess
 processDecl = do
-  ((n, lbl, items), s) <- spanned $ do
+  ((n, lbl, exec, items), s) <- spanned $ do
     kw "process"
     n <- ident
     lbl <- optional stringLit
+    exec <- executable
     items <- braces (withComments IComment item)
-    pure (n, lbl, items)
-  pure (SProcess n lbl items s)
+    pure (n, lbl, exec, items)
+  pure (SProcess n lbl exec items s)
+
+-- | The @nonexecutable@ modifier, which BPMN spells @isExecutable="false"@.
+executable :: P Bool
+executable = maybe True (const False) <$> optional (kw "nonexecutable")
 
 collabDecl :: P SCollab
 collabDecl = do
@@ -282,13 +299,17 @@ collabItem = choice [CPool <$> poolDecl, CMessageFlow <$> msgFlow] <?> "pool or 
 
 poolDecl :: P SPool
 poolDecl = do
-  ((n, lbl, body), s) <- spanned $ do
+  ((n, lbl, pn, exec, body), s) <- spanned $ do
     kw "pool"
     n <- ident
     lbl <- optional stringLit
+    -- @process "…"@ names the process the pool holds, for the files where the
+    -- participant and the process do not share a name.
+    pn <- optional (kw "process" *> stringLit)
+    exec <- executable
     body <- optional (braces (withComments IComment item))
-    pure (n, lbl, body)
-  pure (SPool n lbl body s)
+    pure (n, lbl, pn, exec, body)
+  pure (SPool n lbl pn exec body s)
 
 msgFlow :: P SMsgFlow
 msgFlow = do
